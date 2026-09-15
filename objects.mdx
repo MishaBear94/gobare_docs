@@ -1,0 +1,178 @@
+---
+title: "Objects"
+description: "What each response and request shape contains"
+---
+
+Every field a response can carry, and what an object means before you have
+made a call to see one. **Bold** names are required.
+
+## The session object
+
+A cloud computer with an agent on it. Everything else hangs off one.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `session`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`id`** | string | Ours, not yours. Use `metadata` to carry your own identifier. |
+| `title` | string or null | A label for people. Set it yourself; nothing derives one. |
+| **`status`** | `idle` · `working` · `requires_action` · `failed` | `idle` accepts input. `working` is running a turn. `requires_action` is waiting on you — see `required_actions`. `failed` is the last turn's outcome, not a dead session. |
+| **`created_at`** | integer | Unix milliseconds. |
+| **`updated_at`** | integer | Unix milliseconds. Moves on any change, including the workspace waking. |
+| `source` | `api` · `console` · `cli` · `null` | Which door created this session. Null on sessions predating the field. |
+| `created_by_token` | string or null | The id of the access token that created it — never its secret. |
+| **`agent`** | object | What is running, and how freely. |
+| **`environment`** | object | The workspace: its state, where the agent works, and the repository bound to it. |
+| **`preview`** | object | Addresses for whatever the agent is serving. See preview.md. |
+| `required_actions` | RequiredAction[] | Everything the session is waiting on you for. Authoritative — not a replay of events, so a caller that restarted gets the same complete answer. |
+
+## The turn object
+
+One piece of work, from the message that started it to the moment it settles.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `turn`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`id`** | string | Ours. Quote it when reporting a problem with this turn. |
+| **`session_id`** | string | The session this turn belongs to. |
+| **`status`** | `working` · `completed` · `failed` · `cancelled` | `working` covers everything before it settles, including a turn parked on a tool result from you — watch the session's `requires_action` for that, not this field. `completed`, `failed` and `cancelled` are settled; a settled turn never moves again. |
+| **`created_at`** | integer | Unix milliseconds, when the input was accepted. |
+| `started_at` | integer or null | When the agent began. Null until it does — a turn is `working` from the moment it is accepted, including while it waits behind another one, so this is the only field that tells the two apart. `queued` was removed from `status`; this description still named it. |
+| `completed_at` | integer or null | When it settled. Null until it has. |
+| `artifacts` | `pending` · `ready` · `partial` · `failed` · `null` | Whether this turn's artifacts can be fetched yet. Publication runs after the turn settles, so an empty artifact list under `pending` means not yet, and under `ready` means the turn produced nothing. `partial` means publishing finished and left something behind — read `artifacts_skipped` for what and why. |
+| `artifacts_skipped` | object[] | Files publishing did not take, and why. Empty unless `artifacts` is `partial`. A file past the per-file ceiling, or one that did not fit in what the turn had left, is reported here rather than disappearing. |
+| `subagent_id` | string or null | Always null today; reserved for delegation. |
+| `error` | object or null | Why it failed, when it did. Null otherwise. |
+
+## The item object
+
+One thing that happened inside a turn — a message, a tool call, a file change.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `item`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`id`** | string | Ours. Stable; use it as a paging cursor. |
+| **`session_id`** | string | The session this item belongs to. |
+| **`type`** | `message` · `tool_call` · `command_execution` · `file_change` · `approval` · `question` · `mcp_unavailable` · `error` | What kind of thing happened. Decides which of `content` and `detail` carries the substance. `error` says a run could not start or could not continue, and `detail.message` says why. |
+| **`created_at`** | integer | Unix milliseconds. |
+| `role` | `user` · `assistant` | On `message` items only: who said it. |
+| `content` | string | The text of a `message`. Empty on other kinds. |
+| `detail` | object | Everything kind-specific: the command run, the path changed, the arguments passed. `examples` carries a real one per item type. `detail.event` is the *event* name — items and events share one vocabulary, and that field is the join between them. It is also how the two halves of `tool_call` are told apart: a call and its result are both `type: "tool_call"`, and only `detail.event` says which. There is no `tool_result` item type; code written from the enum alone renders every tool call twice. |
+
+## The required action object
+
+Something the session is waiting on you for.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`type`** | `function_call` · `approval` · `question` | What is being asked of you. `function_call` you answer through the API; `approval` and `question` are answered by a person in the Console. |
+| **`turn_id`** | string | Copy this back when answering. |
+| **`call_id`** | string | Copy this back when answering. It identifies which call the result is for. |
+| `name` | string or null | The function the agent wants to call, as you declared it. |
+| `arguments` | object | What it wants to call the function with. Shaped by your own parameter schema. |
+| `created_at` | integer | Unix milliseconds, when the agent asked. |
+| `expires_at` | integer or null | Unix milliseconds, when this stops being waited for — set from the tool's own `timeout_seconds`. Null, the default, means it waits indefinitely. Past this the call is answered as failed and the turn continues; the turn itself does not fail. |
+
+## The artifact object
+
+A file a turn published. Outlives the workspace that made it.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `artifact`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`id`** | string | Ours. Use it to fetch the bytes. |
+| **`session_id`** | string | The session that produced it. |
+| **`turn_id`** | string | The turn that published it. |
+| **`path`** | string | Where it was in the workspace when it was published. |
+| **`size_bytes`** | integer | Of the stored copy. |
+| `content_type` | string | Guessed from the path. `application/octet-stream` when unrecognised. |
+| `created_at` | integer | Unix milliseconds, when it was published. |
+
+## The agent object
+
+A reusable definition to start sessions from.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `agent`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`id`** | string | Ours. Pass it as `agent.id` when creating a session. |
+| **`name`** | string | Yours, for recognising it. Not an identifier. |
+| `model` | string or null | The model sessions from this agent run on, unless they override it. |
+| `model_credential_id` | string or null | The connection to run on. Null uses the organization's default. |
+| `instructions` | string or null | Standing instructions given to every session started from this agent. |
+| `tools` | Tool[] | Tools every session started from this agent gets, unless it replaces them. Secrets are withheld — see `redacted` on an entry. |
+| `text` | object or null | Output shaping copied into every session started from this agent. |
+| `created_at` | integer | Unix milliseconds. |
+
+## The model credential object
+
+A model connection this organization owns.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `model_credential`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`id`** | string | Pass as agent.model_credential_id. |
+| `label` | string | Yours, from the Console. For recognising the connection. |
+| `connector` | string | Which provider integration it uses. |
+| **`model`** | string | agent.model must match this. |
+| `is_default` | boolean | Whether a session that names no credential gets this one. |
+| `last4` | string | The last four characters of the key. On create only; the key itself is never returned. |
+| `verified` | boolean | Whether the provider accepted a probe before this was stored. |
+
+## The preview object
+
+A published address, and the port behind it.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `preview`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`subdomain`** | string | The label the site is served under. |
+| **`url`** | string | The public address. A Gobare origin, never the sandbox provider's. |
+| **`published_url`** | string | The same address, under the name the session object uses for it. A session carries two — `preview.url` needs a token, `preview.published_url` does not — and this call returned only `url`, so nothing in the shape said which one you were holding. It is the public one; this field says so rather than leaving you to bet on it. |
+| **`port`** | integer or null | The workspace port being served. |
+
+## The webhook subscription object
+
+Where deliveries go, and for which events. The secret appears once, on creation.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `webhook.subscription`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`id`** | string | Ours. Use it to delete the subscription. |
+| **`url`** | string | Where deliveries go. Must be https. |
+| **`events`** | string[] | Which events to deliver. An empty list means all of them. |
+| `active` | boolean | False once deliveries have been given up on. See webhooks.md on retries and dead letters. |
+| **`secret`** | string | Recompute x-gobare-signature as HMAC-SHA256 over `<timestamp>.<body>`. |
+
+## The event object
+
+One frame of the session's event stream.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `event`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`type`** | string | The event's name. See events.md for the vocabulary. |
+| `internal_type` | string | The control plane's own name for the event, for cross-referencing logs. |
+| **`session_id`** | string | The session it happened in. |
+| `seq` | integer or null | Cursor for Last-Event-ID. Null on a transient event, which does not advance it. |
+| **`created_at`** | integer | Unix milliseconds. |
+| `payload` | object | Everything specific to this event type. Not one shape — `examples` below carries a real payload for every type in the vocabulary, keyed by the type. Read the one you are handling rather than probing for fields: `agent.tool_call` carries `toolName` and `args`, not `name` and `arguments`, and guessing that pair wrong renders every tool call as an empty object. |
+
+## The tool configuration object
+
+The functions and MCP servers a session may use.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`object`** | string | Always `session.tools`. Names the shape, so a value can be identified without knowing which call returned it. |
+| **`session_id`** | string | The session this configuration applies to. |
+| `tools` | Tool[] | The configuration as sent, in the same vocabulary: one entry per tool, each with a `type` of `mcp` or `function`. Secret values are withheld — see `redacted`. |
+| `text` | object or null | Output shaping, or null when none was set. Asked of the model, not enforced. |
+
+## The error object
+
+Every refusal, in one shape.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **`error`** | object | Always present on a failure, and the only thing present. |
+

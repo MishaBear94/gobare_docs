@@ -1,0 +1,107 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Gobare Agent API Docs",
+  "colors": {
+    "primary": "#7a766d",
+    "light": "#f4ebdc",
+    "dark": "#111110"
+  },
+  "favicon": "/favicon.png",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Start here",
+        "pages": [
+          "index",
+          "quickstart",
+          "production-integration",
+          "model-credentials",
+          "sessions",
+          "saved-agents"
+        ]
+      },
+      {
+        "group": "Running a session",
+        "pages": [
+          "input",
+          "events",
+          "tools",
+          "required-actions",
+          "webhooks",
+          "idempotency",
+          "preview"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides",
+          "guides/extracting-structured-data",
+          "guides/an-agent-behind-your-api",
+          "guides/approvals-in-your-product",
+          "guides/showing-the-agents-work",
+          "guides/work-that-spans-hours",
+          "guides/switching-model-providers"
+        ]
+      },
+      {
+        "group": "Client libraries",
+        "pages": [
+          "typescript",
+          "python"
+        ]
+      },
+      {
+        "group": "When things go wrong",
+        "pages": [
+          "troubleshooting",
+          "errors",
+          "limits"
+        ]
+      },
+      {
+        "group": "API reference",
+        "pages": [
+          "pagination",
+          "objects"
+        ]
+      },
+      {
+        "group": "About this API",
+        "pages": [
+          "changelog",
+          "design-decisions",
+          "run-session",
+          "AGENTS"
+        ]
+      },
+      {
+        "group": "Endpoints",
+        "openapi": "/openapi.json"
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/MishaBear94/gobare_tools"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Log in",
+      "href": "https://app.gobare.dev"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/MishaBear94/gobare_tools"
+    }
+  },
+  "logo": {
+    "light": "/logo/ink-dark.svg",
+    "dark": "/logo/ink-light.svg"
+  }
+}
