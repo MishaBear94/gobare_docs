@@ -1,0 +1,50 @@
+---
+title: "How this blog works"
+description: "Posts live in this repository. Commit a file, and gobare.dev picks it up."
+date: "2026-09-19"
+---
+
+The blog on [gobare.dev/blog](https://gobare.dev/blog) is served from this
+repository. There is no CMS, no second repo and no deploy step: a post is an
+`.mdx` file in `blog/`, and the website reads it at request time.
+
+## Adding a post
+
+Create `blog/your-slug.mdx` with the same frontmatter the rest of these docs
+use, plus a date:
+
+```mdx
+---
+title: "What the post is called"
+description: "One sentence. It is the summary on the index and the meta description."
+date: "2026-09-19"
+---
+
+The body, in markdown.
+```
+
+Commit it to `main`. The URL is `gobare.dev/blog/your-slug` — the filename is
+the slug.
+
+## When it appears
+
+Within about a minute. The website fetches this folder from GitHub on each
+request and caches the result at Cloudflare's edge for 60 seconds, so a new
+post shows up without anyone redeploying gobare.dev.
+
+Two consequences worth knowing:
+
+- Editing a published post is the same operation as adding one. Commit, wait a
+  minute, it is live.
+- Deleting the file removes the post from the index and makes its URL a 404.
+
+## What these files are not
+
+They are not registered in `docs.json`, so they do not appear in the docs
+navigation and Mintlify does not publish them. `blog/` is read by gobare.dev
+and nothing else.
+
+## Drafts
+
+A post with `draft: true` in its frontmatter is skipped by the index and its
+URL returns 404. That is how you leave something half-written on `main`.
