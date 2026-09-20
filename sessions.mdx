@@ -55,11 +55,11 @@ curl -s -X POST $GOBARE_API/v1/sessions \
 `metadata` can also be changed later with `PATCH /v1/sessions/{id}`, which takes
 any combination of those and `title`.
 
-## Five complete requests
+## Eight complete requests
 
-Every field above in isolation, rather than assembled — five real, complete
+Every field above in isolation, rather than assembled — eight real, complete
 `POST /v1/sessions` bodies, each run against production before being written
-down here, for five distinct reasons to create one.
+down here, for eight distinct reasons to create one.
 
 **A computer with nothing running on it yet.** No `input` — the agent waits
 for a first message rather than starting a turn immediately. Useful when your
@@ -106,6 +106,32 @@ curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKE
 
 See [required-actions.md](/required-actions) for answering the call this
 produces.
+
+**Seeded with a file, and an opening message that reads it back.** Files
+land when the workspace comes up — see [Files at creation](#files-at-creation)
+— which needs a turn to run at all. `input` here is doing that job as much
+as it is asking a question.
+
+```bash
+DATA=$(printf 'export const greeting = "hello";
+' | base64)
+curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json'   -d "{"agent":{"model":"MiniMax-M3"},"input":"List the files under /workspace and print their contents.","environment":{"files":[{"path":"src/greeting.ts","data":"$DATA"}]}}"
+```
+
+**With standing instructions**, followed on every turn rather than restated in
+every message — see [Instructions](#instructions) below.
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json'   -d '{"agent":{"model":"MiniMax-M3","instructions":"Always answer in three sentences or fewer."}}'
+```
+
+**Read-only, so nothing it does can change anything.** For a session you want
+to ask questions of but never let write — see
+[Approval mode and permission rules](#approval-mode-and-permission-rules).
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json'   -d '{"agent":{"model":"MiniMax-M3","approval_mode":"read_only"}}'
+```
 
 ## Crews
 
