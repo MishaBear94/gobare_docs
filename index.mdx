@@ -88,6 +88,179 @@ while True:
 print(call("POST", f"/sessions/{session['id']}/preview", {})["url"])
 ```
 
+```go Go
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"time"
+)
+
+const api = "https://api.gobare.dev"
+
+func call(method, path string, body any) map[string]any {
+	var reader io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		reader = bytes.NewReader(b)
+	}
+	req, _ := http.NewRequest(method, api+"/v1"+path, reader)
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("GOBARE_TOKEN"))
+	req.Header.Set("content-type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer resp.Body.Close()
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	return out
+}
+
+func main() {
+	session := call("POST", "/sessions", map[string]any{
+		"agent": map[string]any{"model": "MiniMax-M3"},
+		"input": "Build a small expense tracker web page — a form to add an expense, a running " +
+			"total, saved in localStorage. Serve it on port 8000 and keep the server running.",
+	})
+	id := session["id"].(string)
+
+	for {
+		turns := call("GET", "/sessions/"+id+"/turns?limit=1", nil)
+		data, _ := turns["data"].([]any)
+		if len(data) > 0 && data[0].(map[string]any)["status"] != "working" {
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+
+	preview := call("POST", "/sessions/"+id+"/preview", map[string]any{})
+	fmt.Println(preview["url"])
+}
+```
+
+```java Java
+import java.net.URI;
+import java.net.http.*;
+import java.time.Duration;
+
+public class Quickstart {
+  static final String API = "https://api.gobare.dev";
+  static final HttpClient client = HttpClient.newHttpClient();
+  static final String TOKEN = System.getenv("GOBARE_TOKEN");
+
+  static String call(String method, String path, String body) throws Exception {
+    var builder = HttpRequest.newBuilder(URI.create(API + "/v1" + path))
+        .header("Authorization", "Bearer " + TOKEN)
+        .header("content-type", "application/json");
+    builder = body == null
+        ? builder.method(method, HttpRequest.BodyPublishers.noBody())
+        : builder.method(method, HttpRequest.BodyPublishers.ofString(body));
+    return client.send(builder.build(), HttpResponse.BodyHandlers.ofString()).body();
+  }
+
+  // No JSON library in the standard library, so this reads the one field each
+  // step needs rather than pulling in a dependency for it.
+  static String field(String json, String key) {
+    int i = json.indexOf("\"" + key + "\"");
+    int start = json.indexOf('"', json.indexOf(':', i)) + 1;
+    return json.substring(start, json.indexOf('"', start));
+  }
+
+  public static void main(String[] args) throws Exception {
+    String body = "{\"agent\":{\"model\":\"MiniMax-M3\"}," +
+        "\"input\":\"Build a small expense tracker web page — a form to add an expense, " +
+        "a running total, saved in localStorage. Serve it on port 8000 and keep the server running.\"}";
+    String session = call("POST", "/sessions", body);
+    String id = field(session, "id");
+
+    while (true) {
+      String turns = call("GET", "/sessions/" + id + "/turns?limit=1", null);
+      if (turns.contains("\"status\"") && !field(turns, "status").equals("working")) break;
+      Thread.sleep(Duration.ofSeconds(5));
+    }
+
+    String preview = call("POST", "/sessions/" + id + "/preview", "{}");
+    System.out.println(field(preview, "url"));
+  }
+}
+```
+
+```csharp C#
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+
+const string api = "https://api.gobare.dev";
+using var client = new HttpClient();
+client.DefaultRequestHeaders.Authorization =
+    new AuthenticationHeaderValue("Bearer", Environment.GetEnvironmentVariable("GOBARE_TOKEN"));
+
+async Task<JsonElement> Call(HttpMethod method, string path, object? body = null)
+{
+    var request = new HttpRequestMessage(method, api + "/v1" + path);
+    if (body != null)
+        request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+    var response = await client.SendAsync(request);
+    return JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+}
+
+var session = await Call(HttpMethod.Post, "/sessions", new
+{
+    agent = new { model = "MiniMax-M3" },
+    input = "Build a small expense tracker web page — a form to add an expense, a running " +
+            "total, saved in localStorage. Serve it on port 8000 and keep the server running.",
+});
+var id = session.GetProperty("id").GetString();
+
+while (true)
+{
+    var turns = await Call(HttpMethod.Get, $"/sessions/{id}/turns?limit=1");
+    var data = turns.GetProperty("data");
+    if (data.GetArrayLength() > 0 && data[0].GetProperty("status").GetString() != "working") break;
+    await Task.Delay(TimeSpan.FromSeconds(5));
+}
+
+var preview = await Call(HttpMethod.Post, $"/sessions/{id}/preview", new { });
+Console.WriteLine(preview.GetProperty("url").GetString());
+```
+
+```ruby Ruby
+require "net/http"
+require "json"
+require "uri"
+
+API = "https://api.gobare.dev"
+TOKEN = ENV.fetch("GOBARE_TOKEN")
+
+def call(method, path, body = nil)
+  uri = URI(API + "/v1" + path)
+  req = method == "GET" ? Net::HTTP::Get.new(uri) : Net::HTTP::Post.new(uri)
+  req["Authorization"] = "Bearer #{TOKEN}"
+  req["content-type"] = "application/json"
+  req.body = JSON.generate(body) if body
+  res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: true) { |http| http.request(req) }
+  JSON.parse(res.body)
+end
+
+session = call("POST", "/sessions", {
+  agent: { model: "MiniMax-M3" },
+  input: "Build a small expense tracker web page — a form to add an expense, a running " \
+         "total, saved in localStorage. Serve it on port 8000 and keep the server running.",
+})
+
+loop do
+  turns = call("GET", "/sessions/#{session['id']}/turns?limit=1")["data"]
+  break if turns.any? && turns[0]["status"] != "working"
+  sleep 5
+end
+
+preview = call("POST", "/sessions/#{session['id']}/preview", {})
+puts preview["url"]
+```
+
 </CodeGroup>
 
 ```
@@ -98,6 +271,11 @@ Open it. There is a working page there, served from the computer the agent was
 given — a form, a running total, saved in the browser. **Forty-nine seconds on
 one run of this, a hundred and eleven on another**; the difference is how long
 the sandbox took to come up.
+
+All seven of the programs above ran this exact scenario against production —
+each produced a session, a preview URL, and a page that loaded. None of them
+need a client library: this API is plain HTTP and JSON, so each is standard
+library only, the same rule the [guides](/guides) follow.
 
 You need a token for this. It takes a minute and the
 [quickstart](/quickstart) has it.
