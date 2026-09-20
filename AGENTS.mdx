@@ -157,7 +157,7 @@ an unused capability is a thing that can fail.
 | It needs input files you hold | `environment.files` at creation, `POST /files` afterwards | Seeded files never overwrite; live writes always do |
 | It needs secrets | `environment.profiles` | Bind-only. Values are never returned and cannot be set through this API |
 | You must find the session again after a restart | `metadata`, then `GET /v1/sessions?metadata=job:8842` — `metadata` answers *which room is mine*, `?root=` below answers *who is in it* | Values must be strings, and nothing is truncated or coerced |
-| Several agents work on one thing | `parent_session_id` at creation, then `?root=` to list them | Depth is capped at 16. A fork spends a slot too |
+| Several agents work on one thing | `parent_session_id` at creation, then `?root=` to list them — the whole pattern, worked through end to end, is [Let several agents work on one thing](/guides/agents-that-work-together) | Depth is capped at 16. A fork spends a slot too |
 | One agent should know what was said without answering | `input.context` | `delivered: false` means the sandbox was not up, **not** that the text was lost |
 | You only want this group's events | `GET /v1/events?root=` | Without it you get every session the organization owns |
 | You must answer "what did this cost" | `GET /v1/sessions/{id}/usage`, `?root=` for the tree | Five states, deliberately not merged into one number |
