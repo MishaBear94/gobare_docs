@@ -156,7 +156,11 @@ an unused capability is a thing that can fail.
 | It works on your code | `environment.repo: "owner/name"` | A `201` does not mean the clone happened. Read `environment.repo.clone_error` |
 | It needs input files you hold | `environment.files` at creation, `POST /files` afterwards | Seeded files never overwrite; live writes always do |
 | It needs secrets | `environment.profiles` | Bind-only. Values are never returned and cannot be set through this API |
-| You must find the session again after a restart | `metadata`, then `GET /v1/sessions?metadata=job:8842` | Values must be strings, and nothing is truncated or coerced |
+| You must find the session again after a restart | `metadata`, then `GET /v1/sessions?metadata=job:8842` — `metadata` answers *which room is mine*, `?root=` below answers *who is in it* | Values must be strings, and nothing is truncated or coerced |
+| Several agents work on one thing | `parent_session_id` at creation, then `?root=` to list them | Depth is capped at 16. A fork spends a slot too |
+| One agent should know what was said without answering | `input.context` | `delivered: false` means the sandbox was not up, **not** that the text was lost |
+| You only want this group's events | `GET /v1/events?root=` | Without it you get every session the organization owns |
+| You must answer "what did this cost" | `GET /v1/sessions/{id}/usage`, `?root=` for the tree | Five states, deliberately not merged into one number |
 | Every session in this part of your product starts the same | An [agent](/saved-agents): `POST /v1/agents`, then `{"agent":{"id":"…"}}` | It is copied, not referenced. Changing it never reaches work already running |
 | The work spans hours and several rounds | One session, many turns | A workspace is reclaimed two hours after it starts. Pausing does not count against that |
 | You want two attempts from one state | `POST /v1/sessions/{id}/fork` | Spends a session slot; refused with `conflict` mid-turn |
@@ -436,6 +440,7 @@ POST /v1/sessions/{session_id}/events
 | Type | What it does | Refused when |
 | --- | --- | --- |
 | `input.message` | Says something. Starts a turn, or queues behind the running one | `queue_full` at five queued |
+| `input.context` | Tells it something without asking it to answer. No turn runs — see [input.md](/input) | `invalid_request` on empty text |
 | `input.tool_result` | Answers a function the agent called | `not_found` if no such call is pending |
 | `input.approval` | Allows or refuses something the agent asked to do | `invalid_request` without `call_id` and a boolean `approved` |
 | `input.question_answer` | Answers a question the agent asked | `invalid_request` without `call_id` and a non-empty `answer` |
@@ -523,7 +528,7 @@ The persisted vocabulary is an allowlist: `turn.started`, `turn.ended`,
 `message.dequeued`, `file.changed`, `approval.requested`, `approval.resolved`,
 `question.asked`, `question.answered`, `tool.required`, `tool.resolved`,
 `mcp.unavailable`, `sandbox.created`, `sandbox.paused`, `sandbox.resumed`,
-`preview.ready`, `workspace.recovery_failed`, `artifact.created`.
+`preview.ready`, `workspace.recovery_failed`, `artifact.created`, `user.context`.
 
 `turn.ended` is deliberately neutral: the run finished, and whether it succeeded
 is a property of the turn it names. Read the turn.
@@ -675,7 +680,9 @@ back everything looking exactly like a filter that matched everything.
 
 `GET /v1/sessions/{id}/items` is the durable record and it outlives the
 workspace. Item types: `message`, `tool_call`, `command_execution`,
-`file_change`, `approval`, `question`, `mcp_unavailable`, `error`.
+`file_change`, `approval`, `question`, `mcp_unavailable`, `error`, `context` —
+the record of an `input.context` write, so a transcript read alone still shows
+what a room's silent members were given.
 
 **`error` is the one to look for when a session says `failed` and there are no
 turns at all.** A run that could not start leaves no turn behind; this item says

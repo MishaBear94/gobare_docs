@@ -20,6 +20,7 @@ A cloud computer with an agent on it. Everything else hangs off one.
 | **`updated_at`** | integer | Unix milliseconds. Moves on any change, including the workspace waking. |
 | `source` | `api` · `console` · `cli` · `null` | Which door created this session. Null on sessions predating the field. |
 | `created_by_token` | string or null | The id of the access token that created it — never its secret. |
+| `parent_session_id` | string or null | The session this one was branched from, or `null` when it was created directly. Recorded at creation and never cleared: the source may be edited or deleted afterwards and this still answers "where did this session come from", which is the first question asked when two sessions behave differently. The column has existed since the fork endpoint shipped; only the fork response could see it, so a session read back later had no way to say it was a branch. |
 | **`agent`** | object | What is running, and how freely. |
 | **`environment`** | object | The workspace: its state, where the agent works, and the repository bound to it. |
 | **`preview`** | object | Addresses for whatever the agent is serving. See preview.md. |
@@ -52,7 +53,7 @@ One thing that happened inside a turn — a message, a tool call, a file change.
 | **`object`** | string | Always `item`. Names the shape, so a value can be identified without knowing which call returned it. |
 | **`id`** | string | Ours. Stable; use it as a paging cursor. |
 | **`session_id`** | string | The session this item belongs to. |
-| **`type`** | `message` · `tool_call` · `command_execution` · `file_change` · `approval` · `question` · `mcp_unavailable` · `error` | What kind of thing happened. Decides which of `content` and `detail` carries the substance. `error` says a run could not start or could not continue, and `detail.message` says why. |
+| **`type`** | `message` · `tool_call` · `command_execution` · `file_change` · `approval` · `question` · `mcp_unavailable` · `error` · `context` | What kind of thing happened. Decides which of `content` and `detail` carries the substance. `error` says a run could not start or could not continue, and `detail.message` says why. |
 | **`created_at`** | integer | Unix milliseconds. |
 | `role` | `user` · `assistant` | On `message` items only: who said it. |
 | `content` | string | The text of a `message`. Empty on other kinds. |

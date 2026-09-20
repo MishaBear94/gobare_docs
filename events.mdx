@@ -139,6 +139,7 @@ The rest, briefly:
 | `agent.error` | `{message}` |
 | `agent.todos` | `{items:[{label,status}]}` |
 | `user.message` | `{text}` |
+| `user.context` | `{text}` — something the session was told; no turn ran |
 | `message.queued` / `message.dequeued` | `{text, position?}` |
 | `file.changed` | `{path, kind, diff?}` — `kind` is created / modified / deleted |
 | `approval.requested` | `{toolCallId, name, args, sensitive}` |
@@ -187,6 +188,7 @@ a promise we could not withdraw.
 | `agent.error` | yes | Something went wrong inside the run |
 | `agent.todos` | yes | The agent's task list changed |
 | `user.message` | yes | Input was recorded |
+| `user.context` | yes | The session was told something without being asked to answer. See [input.md](/input) |
 | `message.queued` | yes | Input arrived while a turn was running |
 | `message.dequeued` | yes | A queued message started |
 | `file.changed` | yes | A workspace file was created, modified or deleted |

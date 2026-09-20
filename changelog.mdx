@@ -8,6 +8,38 @@ removed one.
 
 Dates are when the change reached production.
 
+## 2026-09-20
+
+**Several agents can now work on one thing, as a tree rather than a flat list
+you maintain yourself.** `parent_session_id` at creation joins a session to
+another's tree; `GET /v1/sessions?root=` and `GET /v1/events?root=` return that
+whole tree, itself included, instead of everything the organization owns. No
+new noun — it is the `forked_from` column, which has held rows since migration
+11. See [sessions.md](/sessions#crews) and
+[Let several agents work on one thing](/guides/agents-that-work-together).
+
+**Give an agent information without making it answer.** `input.context` adds
+to what a session knows and starts no turn — for the agent in a room that was
+not addressed but should still hear what was said. `delivered: false` on the
+response means the sandbox was not running right then, not that the text was
+lost; it is in the transcript either way. See [input.md](/input).
+
+**What a crew has spent, without collapsing five kinds of number into one.**
+`GET /v1/sessions/{id}/usage`, and `?root=` on it for the whole tree's total.
+`sandbox_seconds`, `chargeable_seconds` and `needs_review_intervals` stay
+separate because a live estimate is not a bill and an interval nobody has
+reconciled yet is not a number to bill either. See [limits.md](/limits).
+
+**A session's `title` is stored.** It was accepted on `POST /v1/sessions` and
+silently dropped — a crew created with four names got back four untitled ids.
+Read back on `GET /v1/sessions/{id}` like every other field that day.
+
+**`input.context` and the room's shared context are readable, not just
+writable.** Both landed nowhere on `GET /items` and nowhere on the event
+stream when they shipped — the primitive worked and had no way to be observed
+working. `GET /items` now has a `context` item type of its own, and
+`user.context` is a stream frame like any other persisted event.
+
 ## 2026-09-14
 
 **A backend we cannot reach is `503`, not `401`.** A lookup that failed — a

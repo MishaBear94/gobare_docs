@@ -98,6 +98,19 @@ the HTTP surface, and we have not convinced ourselves the API-level version
 earns its complexity. It is an omission we may revisit, not a design we have
 rejected.
 
+**This is not the same decision as multi-agent, and reading it as one is the
+mistake to avoid:**
+
+- **An agent spawning a sub-agent** — still not offered, deliberately, for the
+  reason above. Nothing here has changed.
+- **Your service orchestrating several peer sessions** — offered. See
+  [sessions.md](/sessions#crews) and
+  [Let several agents work on one thing](/guides/agents-that-work-together).
+
+The two look similar from outside a single session and are unrelated inside
+one: a sub-agent would be the runtime deciding to create work; a crew is your
+service deciding to, through the same `POST /v1/sessions` you already call.
+
 ## Smaller things
 
 - **The clone is owed, not done.** `environment.repo` is recorded when the
@@ -123,6 +136,10 @@ rejected.
 - **Ids are ours.** Session ids are UUIDs; turns are `turn_…`; artifacts are
   `art_5e2b9017c4d63a8f`; webhook subscriptions are `whsub_6c1e40b9a72d58f3`. Do not parse them.
 - **Times are milliseconds since the epoch**, as numbers.
+- **A crew is not a new noun.** It is a tree on the `forked_from` column,
+  which has held production rows since migration 11. The API field is
+  `parent_session_id` because a coordinator starting a worker is not a fork.
+  There is no crew object, and nothing to create or delete.
 
 ## Next
 

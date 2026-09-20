@@ -105,6 +105,11 @@ receive a readable JSON error rather than a connection that dies. It carries
 Both ceilings exist: the per-token one alone is no bound at all, because an
 organization can mint tokens.
 
+**`GET /v1/events?root=` is one stream, against both ceilings, however many
+sessions are in the tree it covers.** A crew of ten watched through its root's
+`?root=` stream costs one slot, not ten — the same connection just carries more
+sessions' frames.
+
 A stream you hold open but do not read backs up: past ~1 MiB of unread frames
 the transient ones are dropped, past 8 MiB the connection is closed. Reconnect
 with your cursor and nothing persisted is lost — see [events.md](/events).
@@ -140,6 +145,19 @@ conversation, not a setting.
 If your integration creates sessions per unit of work, delete them when the work
 is done. The most common way to hit this is a client that creates and never
 cleans up.
+
+**A crew of N costs N slots, against this same ceiling** — a coordinator and
+its workers are ordinary sessions, counted the same as any other. `fork`
+spends one too: it is a second running computer, not a cheaper copy. Twenty-five
+was sized for one task at a time, not for a room of bots left running.
+
+**A session tree is only walked 16 levels deep.** `parent_session_id` itself
+is not depth-checked at creation — a seventeenth level is created without
+complaint. It is `?root=`, on both `GET /v1/sessions` and the event stream,
+that stops finding members past that depth, so a chain that deep silently
+drops out of every list and stream built on `root=` while still existing and
+still running. Sixteen holds an ordinary crew; it is not a ceiling you are
+meant to approach. See [sessions.md](/sessions#crews).
 
 ## Message queue
 

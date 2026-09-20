@@ -134,6 +134,56 @@ And one thing a generated client would not: it **resumes**. A dropped
 connection continues from `Last-Event-ID` rather than starting over or losing
 the middle. See [events.md](/events).
 
+## Several sessions, one piece of work
+
+The loop above is for one session. When the work is split across several —
+one agent researches, another writes, a third reviews — join them into a tree
+instead of tracking your own list of which sessions belong together:
+
+<CodeGroup>
+
+```bash curl
+COORDINATOR=$(curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"title":"researcher"}' | jq -r .id)
+
+curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d "{\"title\":\"coder\",\"parent_session_id\":\"$COORDINATOR\"}"
+
+# Both, in one call: itself included, not just direct children.
+curl -s "$GOBARE_API/v1/sessions?root=$COORDINATOR" -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+```typescript TypeScript
+const coordinator = await call("POST", "/sessions", { title: "researcher" });
+const worker = await call("POST", "/sessions", { title: "coder", parent_session_id: coordinator.id });
+
+// Both, in one call: itself included, not just direct children.
+const crew = await call("GET", `/sessions?root=${coordinator.id}`);
+```
+
+```python Python
+coordinator = call("POST", "/sessions", {"title": "researcher"})
+worker = call("POST", "/sessions", {"title": "coder", "parent_session_id": coordinator["id"]})
+
+# Both, in one call: itself included, not just direct children.
+crew = call("GET", f"/sessions?root={coordinator['id']}")
+```
+
+</CodeGroup>
+
+The same `?root=` reaches the event stream and the usage endpoint. Left off
+either one, you get the whole organization's sessions or the whole
+organization's usage — not an error, just not what you meant. See
+[sessions.md](/sessions#crews) and
+[limits.md](/limits) for what a crew costs: each session is still its own
+sandbox, billed and slotted like any other.
+
+How agents in a crew actually hand work to each other — a function tool your
+service answers, not a call between sandboxes — is its own page:
+[Let several agents work on one thing](/guides/agents-that-work-together).
+
 ## Taking many files at once
 
 When a turn produced more than one file, take them all at once:

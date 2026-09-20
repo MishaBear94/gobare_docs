@@ -4,7 +4,7 @@ description: "You want to send the agent a message, a result, a steer or a stop"
 ---
 Everything you can send a session, in one place.
 
-All four go to the same endpoint, one per request:
+They all go to the same endpoint, one per request:
 
 ```
 POST /v1/sessions/{session_id}/events
@@ -23,6 +23,7 @@ A success is `202`, not `200` — the agent has the work, not the answer.
 | Type | What it does | When it is refused |
 | --- | --- | --- |
 | `input.message` | Say something. Starts a turn, or queues behind the running one | `queue_full` at five queued |
+| `input.context` | Tell it something without asking it to answer. No turn runs | `invalid_request` on empty text |
 | `input.tool_result` | Answer a function the agent called | `not_found` if no such call is pending |
 | `input.approval` | Allow or refuse something the agent asked to do | `invalid_request` without `call_id` and a boolean `approved` |
 | `input.question_answer` | Answer a question the agent asked | `invalid_request` without `call_id` and a non-empty `answer` |
@@ -90,6 +91,45 @@ until [ "$(curl -s "$GOBARE_API/v1/sessions/$SESSION/turns?limit=1" \
 ```
 
 A fresh session has no previous turn, so a first message needs none of this.
+
+## `input.context`
+
+Something the session should know, without being asked to reply. It lands in
+the transcript and no turn runs.
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions/$SESSION/events \
+  -H "Authorization: Bearer $GOBARE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"events":[{"type":"input.context","content":"@reviewer said: the rollback is already merged."}]}'
+```
+
+| Field | | |
+| --- | --- | --- |
+| `content` | required | A string, or an array of `{type,text}` parts |
+
+The reply carries `delivered`:
+
+- `true` — a running agent took it there and then
+- `false` — the sandbox was not up
+
+**`false` does not mean it was lost.** The text is in the transcript either
+way, and the next turn is built with it — so a room can hand an agent context
+before that agent has ever spoken, which is the usual case when someone joins a
+conversation already in progress.
+
+It appears afterwards as an item of type `context`, and on the stream as
+`user.context`. Deliberately not a `message`: nobody said it *to* this session,
+and rendering it as one would show the agent a conversation that never
+happened.
+
+If a turn is already running, the context lands after it finishes. That turn's
+context is fixed, and inserting into it would make one turn's behaviour depend
+on when a message happened to arrive.
+
+Without this, keeping several agents current means holding your own copy of the
+conversation and resending it — which makes every prompt grow with the length
+of the room. See [agents that work together](/guides/agents-that-work-together).
 
 ## `input.tool_result`
 

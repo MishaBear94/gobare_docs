@@ -248,6 +248,13 @@
             ],
             "description": "The id of the access token that created it — never its secret."
           },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The session this one was branched from, or `null` when it was created directly. Recorded at creation and never cleared: the source may be edited or deleted afterwards and this still answers \"where did this session come from\", which is the first question asked when two sessions behave differently. The column has existed since the fork endpoint shipped; only the fork response could see it, so a session read back later had no way to say it was a branch."
+          },
           "agent": {
             "type": "object",
             "description": "What is running, and how freely.",
@@ -571,7 +578,8 @@
               "approval",
               "question",
               "mcp_unavailable",
-              "error"
+              "error",
+              "context"
             ],
             "description": "What kind of thing happened. Decides which of `content` and `detail` carries the substance. `error` says a run could not start or could not continue, and `detail.message` says why."
           },
@@ -640,6 +648,10 @@
               "error": {
                 "event": "agent.error",
                 "message": "the model provider returned 502"
+              },
+              "context": {
+                "event": "user.context",
+                "text": "@reviewer said: the rollback is already merged."
               },
               "tool_call (result)": {
                 "event": "agent.tool_result",
@@ -745,6 +757,9 @@
               },
               "user.message": {
                 "text": "Alert A-4471: export error rate 12%."
+              },
+              "user.context": {
+                "text": "@reviewer said: the rollback is already merged."
               },
               "message.queued": {
                 "text": "Also check the retry queue.",
@@ -870,6 +885,10 @@
                 }
               }
             }
+          },
+          "parent_session_id": {
+            "type": "string",
+            "description": "The session this one comes from. Read back as `parent_session_id`, and `GET /v1/sessions?root=` returns the whole tree under one — which is how a crew of sessions is addressed without a second noun. Recorded rather than enforced: the parent may be deleted afterwards and this still answers where the session came from. `POST /v1/sessions/{id}/fork` records the same relation on its own."
           },
           "metadata": {
             "type": "object",
@@ -1167,7 +1186,7 @@
         "properties": {
           "events": {
             "type": "array",
-            "description": "Exactly one event. What it does depends on its `type` — send a message, answer a tool call, approve, steer or cancel.",
+            "description": "Exactly one event. What it does depends on its `type` — send a message, add context without starting a turn, answer a tool call, approve, steer or cancel.",
             "minItems": 1,
             "maxItems": 1,
             "items": {
@@ -1187,6 +1206,7 @@
             "type": "string",
             "enum": [
               "input.message",
+              "input.context",
               "input.tool_result",
               "input.approval",
               "input.question_answer",
@@ -1195,7 +1215,7 @@
             ]
           },
           "content": {
-            "description": "For `input.message` and `input.steer`: a string, or an array of `{type,text}` parts."
+            "description": "For `input.message`, `input.context` and `input.steer`: a string, or an array of `{type,text}` parts."
           },
           "turn_id": {
             "type": "string",
@@ -1526,6 +1546,60 @@
           }
         }
       },
+      "SessionUsage": {
+        "type": "object",
+        "description": "Sandbox time, split by how settled it is. One number would have to merge a live estimate with a reconciled charge and invent a duration for an interval nobody can account for, so it is several.",
+        "required": [
+          "object",
+          "session_id",
+          "scope",
+          "as_of",
+          "sandbox_seconds",
+          "chargeable_seconds",
+          "needs_review_intervals"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "session.usage"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "session",
+              "tree"
+            ],
+            "description": "`tree` when `?root=` asked for the whole crew."
+          },
+          "sessions": {
+            "type": "integer",
+            "description": "How many sessions this total covers."
+          },
+          "as_of": {
+            "type": "integer",
+            "description": "Unix ms. A running sandbox is counted up to this moment, so the number moves until it stops."
+          },
+          "sandbox_seconds": {
+            "type": "integer",
+            "description": "Everything that can be accounted for: settled, pending reconciliation, and still running. Not a bill."
+          },
+          "chargeable_seconds": {
+            "type": "integer",
+            "description": "The reconciled subset — the part the provider has confirmed. Always less than or equal to `sandbox_seconds`."
+          },
+          "needs_review_intervals": {
+            "type": "integer",
+            "description": "Intervals whose duration is not known. Reported as a count on purpose: inventing seconds for them would make the total look settled when it is not."
+          },
+          "intervals": {
+            "type": "integer",
+            "description": "How many intervals went into this, excluding ones marked not billable at all."
+          }
+        }
+      },
       "ModelConnector": {
         "type": "object",
         "required": [
@@ -1590,7 +1664,7 @@
         "properties": {
           "forked_from": {
             "type": "string",
-            "description": "The session this was branched from. It is untouched."
+            "description": "The session this was branched from. It is untouched. Same value as `parent_session_id`, which every read of this session now also carries — this one predates that field and stays for callers already reading it."
           },
           "workspace_copied": {
             "type": "boolean",
@@ -1696,6 +1770,7 @@
             "type": "string",
             "enum": [
               "input.message",
+              "input.context",
               "input.cancel",
               "input.tool_result",
               "input.steer"
@@ -1719,6 +1794,10 @@
               "integer",
               "null"
             ]
+          },
+          "delivered": {
+            "type": "boolean",
+            "description": "For `input.context`: whether a running agent took it there and then. `false` means the sandbox was not up — **not** that the text was lost. It is in the transcript either way and the next turn is built with it, so a room can give an agent context before it has ever spoken."
           }
         }
       },
@@ -2585,6 +2664,15 @@
               "type": "string"
             },
             "description": "One of your own labels, as `key:value` — `?metadata=job:8842`. Finds the session for a job without keeping a map of your own."
+          },
+          {
+            "name": "root",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only the sessions under this one, itself included — the whole tree, not just its direct children. A crew is a tree: the coordinator is the root, and `parent_session_id` on create is how a worker joins it. Without this a list is organization-wide, so every other task's sessions arrive with yours and you filter them out by hand."
           }
         ],
         "x-required-scope": "sessions:read",
@@ -3522,6 +3610,15 @@
               "minimum": 0
             },
             "description": "Replay durable events after this `seq`. The `Last-Event-ID` header does the same thing."
+          },
+          {
+            "name": "root",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only the sessions under this one, itself included — the same tree `GET /v1/sessions?root=` returns. Without it this stream is organization-wide, so a second task sharing the organization arrives in yours and you drop its frames by hand. A worker started after the connection opened is included: membership is decided per session as each one is first seen, not snapshotted when you subscribe."
           }
         ],
         "x-required-scope": "sessions:read",
@@ -3568,6 +3665,102 @@
           },
           "404": {
             "description": "No such endpoint, or the public API is not enabled on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limit_exceeded`. The token is past its allowance for this bucket. Honour `Retry-After`; the `x-ratelimit-*` headers on every response say how close you were.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected error. Quote the request id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/usage": {
+      "get": {
+        "summary": "Retrieve sandbox usage",
+        "description": "How much sandbox time this session — or the crew under it — has used.",
+        "operationId": "get_sessions_session_id_usage",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "root",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Aggregate the whole tree under this session instead of the one session. The id must match the path, which is how a crew total says which crew it is."
+          }
+        ],
+        "x-required-scope": "sessions:read",
+        "responses": {
+          "200": {
+            "description": "How much sandbox time this session — or the crew under it — has used.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionUsage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_request`. A query parameter this endpoint does not take. Refused rather than ignored, because an ignored filter answers with everything and looks like a filter that matched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is missing, unrecognised, expired or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is valid but may not perform this call. The message names the scope it wanted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such endpoint, or no such object under this token's organization. Another organization's id is indistinguishable from one that never existed, deliberately.",
             "content": {
               "application/json": {
                 "schema": {

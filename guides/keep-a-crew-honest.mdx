@@ -1,0 +1,180 @@
+---
+title: "Keep a crew honest"
+description: "The four things that only break once several agents are really running"
+---
+[Agents that work together](/guides/agents-that-work-together) wires the
+primitives up. This is what went wrong afterwards, building a room of three
+bots against this API and running it on real sandboxes.
+
+None of these are edge cases. All four happened within an hour.
+
+## An agent will tell you it delegated when it did not
+
+Asked to give a teammate a task, a coordinator answered:
+
+>已让 scout 去核查，半小时内回我。
+
+It had called nothing. The next question — "is that task done?" — got "not yet,
+scout is working on it", a progress report on work nobody had been asked to do.
+The teammate did eventually say "I'm picking this up", but only because it had
+**overheard the claim** through `input.context`. The context primitive made the
+fiction self-consistent.
+
+Nothing failed. The turn completed, the session went idle, the transcript reads
+like a team.
+
+**Why.** The agent had called the function earlier that hour — when the person
+said "use message_teammate to ask critic". It calls a function when the function
+is named. "Delegate this" is not a name.
+
+**Two fixes, and you want both.** Say in the tool's own description that writing
+about it sends nothing, and enumerate the verbs in the instructions:
+
+```ts
+const teammateTool = {
+  type: "function",
+  name: "message_teammate",
+  description:
+    "Send a message to a teammate. THIS IS THE ONLY WAY to reach one. " +
+    'Writing "I asked X" or "I have delegated this to X" sends nothing — ' +
+    "they will never see it. Call this first, then say what you did.",
+  timeout_seconds: 60,
+  parameters: {
+    type: "object",
+    properties: { to: { type: "string" }, text: { type: "string" } },
+    required: ["to", "text"],
+  },
+};
+```
+
+```ts
+const instructions =
+  "When you are asked to consult, ask, delegate to, assign work to, or hand " +
+  "anything over to a teammate, call message_teammate. You have no other way " +
+  "to reach them: saying that you did is not doing it.";
+```
+
+**Then make the absence visible.** Prompt wording is a nudge, not a guarantee,
+and the failure is silent by construction — a claim and a delivery look the
+same in the room. Count the deliveries instead. They are items, so you can read
+them back:
+
+```ts
+async function deliveriesTo(sessionId: string): Promise<number> {
+  const page = await get(`/v1/sessions/${sessionId}/items?limit=100`);
+  return page.data.filter(
+    (item: any) =>
+      item.type === "message" &&
+      item.role === "user" &&
+      item.content.startsWith("@"), // whatever prefix your switchboard writes
+  ).length;
+}
+```
+
+Show it beside each member — "heard 23 · **never received a delivery**". No
+heuristic tries to guess whether an agent is lying; the room simply states a
+fact, and a claim that contradicts it is visible to the person reading.
+
+## Hold no copy of the conversation
+
+Your service restarts. The room should not lose its history — and it does not
+have to, because the history is already in the sessions.
+
+```ts
+async function rebuild(crew: Record<string, string>) {
+  const lines = [];
+  for (const [handle, id] of Object.entries(crew)) {
+    const page = await get(`/v1/sessions/${id}/items?limit=100`);
+    for (const item of page.data) {
+      if (item.type !== "message") continue;
+      lines.push({
+        who: item.role === "assistant" ? handle : "person",
+        text: item.content,
+        at: item.created_at,
+      });
+    }
+  }
+  return lines.sort((a, b) => a.at - b.at);
+}
+```
+
+**Take `message` items and skip `context` ones.** A `context` item is the same
+sentence echoed into everyone else's transcript, so including them shows every
+line once per member — three bots, three copies of each thing anybody said.
+
+The moment you keep your own transcript, you will start resending it on each
+handoff, and the prompt grows with the length of the room. That growth is what
+`input.context` exists to remove.
+
+## A session keeps the configuration it was created with
+
+Tools and instructions are written when the session is created. Sessions
+outlive deploys, so **changing your product does not reach the crew already
+running it.** The tool description above was correct in the repository and the
+live bots were still using the old one until they were told.
+
+Re-apply when you attach to a crew rather than only when you create it:
+
+```ts
+for (const [handle, id] of Object.entries(crew)) {
+  await put(`/v1/sessions/${id}/tools`, { tools: [teammateTool] });
+  await patch(`/v1/sessions/${id}`, { agent: { instructions } });
+}
+```
+
+Instructions take effect from the session's next workspace, so a `PATCH` during
+a running turn changes the turn after — see [sessions](/sessions).
+
+## Let someone talk to the room without addressing anyone
+
+If every message needs an `@`, what you have is a router with a chat window on
+it. People talk to a room.
+
+No mention means everyone hears it and nobody answers — which is exactly
+`input.context` for every member and no `input.message` at all:
+
+```ts
+const target = addressedIn(text, Object.keys(crew));
+
+if (target) {
+  await post(`/v1/sessions/${crew[target]}/events`, {
+    events: [{ type: "input.message", content: text }],
+  });
+  for (const [handle, id] of Object.entries(crew)) {
+    if (handle === target) continue;
+    await post(`/v1/sessions/${id}/events`, {
+      events: [{ type: "input.context", content: `[room] to @${target}: ${text}` }],
+    });
+  }
+} else {
+  for (const id of Object.values(crew)) {
+    await post(`/v1/sessions/${id}/events`, {
+      events: [{ type: "input.context", content: `[room] ${text}` }],
+    });
+  }
+}
+```
+
+A bot addressed later answers using what it heard while it was quiet, and you
+paid for no turns to give it that. See [input](/input) for the full event list.
+
+**Decide who is addressed in exactly one place.** The first version of this
+computed the target twice — the browser took the first `@` in the sentence, the
+server took the first member whose handle appeared anywhere. On *"@maker decide,
+then tell @scout"* the interface said maker was replying while scout was the one
+running. One function, and the interface uses its answer rather than its own.
+
+```ts
+function addressedIn(text: string, handles: string[]): string | undefined {
+  return handles
+    .map((h) => ({ h, at: text.indexOf(`@${h}`) }))
+    .filter((m) => m.at >= 0)
+    .sort((a, b) => a.at - b.at)[0]?.h;
+}
+```
+
+## What this does not cover
+
+Who should speak next is your product's decision, not ours — there is no
+built-in routing and no `@` addressing in the API. These are the practices for
+running the room once you have decided.

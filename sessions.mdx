@@ -49,10 +49,72 @@ curl -s -X POST $GOBARE_API/v1/sessions \
 | `metadata` | Your own labels: up to 16 keys, 64 characters per key, 512 per value |
 | `title` | A label for people. Nothing derives one |
 | `input` | An opening message — see below |
+| `parent_session_id` | The session this one comes from. Read back as `parent_session_id`, and `GET /v1/sessions?root=` returns the whole tree under one — see [Crews](#crews) |
 
 `agent.instructions`, `agent.approval_mode`, `agent.permission_rules` and
 `metadata` can also be changed later with `PATCH /v1/sessions/{id}`, which takes
 any combination of those and `title`.
+
+## Crews
+
+Several sessions working on one task are a tree, not a new kind of object. Pass
+`parent_session_id` when you create one, and the coordinator becomes the root:
+
+```bash
+# the coordinator
+ROOT=$(curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"title":"coordinator"}' | jq -r .id)
+
+# a worker under it
+curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d "{\"title\":\"tests\",\"parent_session_id\":\"$ROOT\"}"
+
+# everything in this crew, and nothing else in the organization
+curl -s "$GOBARE_API/v1/sessions?root=$ROOT" -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+`?root=` returns the **whole** tree, not only the direct children — a worker can
+start workers of its own. A root that does not resolve is refused rather than
+answered with an empty list, because an empty crew and a mistyped id look
+identical otherwise.
+
+`POST /v1/sessions/{id}/fork` records the same relation, so a forked session is
+already in its parent's tree. The difference is only what the new session starts
+with: a fork copies the workspace and transcript, and `parent_session_id` on
+create starts clean.
+
+The pointer is history, not a live link. Delete the parent and the child keeps
+answering where it came from — which is the question you ask when two sessions
+in one crew behave differently.
+
+### What a crew cost
+
+```bash
+curl -s "$GOBARE_API/v1/sessions/$ROOT/usage?root=$ROOT" -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+```json
+{
+  "object": "session.usage", "session_id": "…", "scope": "tree", "sessions": 4,
+  "as_of": 1789876543210,
+  "sandbox_seconds": 812, "chargeable_seconds": 640, "needs_review_intervals": 1
+}
+```
+
+Several numbers rather than one, because one would have to merge three different
+kinds of certainty:
+
+| | |
+| --- | --- |
+| `sandbox_seconds` | Everything that can be accounted for — settled, awaiting the provider's reconciliation, and still running. **Not a bill.** |
+| `chargeable_seconds` | The reconciled part. Always ≤ `sandbox_seconds` |
+| `needs_review_intervals` | Intervals whose duration nobody can account for. A **count**, on purpose: turning them into seconds would make the total look settled |
+| `as_of` | A running sandbox is counted up to this moment, so the number moves until it stops |
+
+Drop `?root=` for one session instead of the tree. On this path `root` must name
+the session in the path — it chooses whether to aggregate, not which crew.
 
 ## Reading a session back
 

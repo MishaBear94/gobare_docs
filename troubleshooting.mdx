@@ -291,6 +291,73 @@ from the read.
 
 ---
 
+## `delivered: false` on `input.context` — did my context get lost?
+
+No. A cold sandbox — one that has not run a turn yet — answers `false`. The
+text is written to the transcript either way, and the next turn is built with
+it there; `delivered` says whether a *running* agent took it in right then, not
+whether the write happened.
+
+Verified: inject a word into a session that has not yet run, then ask that same
+session for it. The answer comes back.
+
+**Every agent in a room that has not yet spoken hits this** — its sandbox is
+cold until its own first turn, so the first few context writes to it come back
+`false` while working exactly as documented.
+
+→ [input.md](/input) · [AGENTS.md](/AGENTS) §7.1
+
+---
+
+## I told agent A to contact B; A says it did; B received nothing
+
+Check what actually left A's sandbox before assuming the platform dropped
+something:
+
+```bash
+curl -s "$GOBARE_API/v1/sessions/$SESSION_A/items?limit=20"   -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+If there is no `tool_call` for the teammate function in A's items, nothing was
+sent — the model *narrated* the handoff ("I've let B know") in its reply text
+instead of calling the tool, and a narration is not a request. Nothing in the
+API sees it and nothing needed to fail for this to happen.
+
+The fix is in the tool's own description, which you write: say plainly that
+calling it is what sends the message, and that saying so in a reply does not.
+See how `message_teammate` is declared in
+[Let several agents work on one thing](/guides/agents-that-work-together).
+
+→ [required-actions.md](/required-actions)
+
+---
+
+## `?root=` returns one session, not the whole crew
+
+`root` always includes the id you passed, so this is never a genuinely empty
+list — it is a list of one when you expected several. The tree it returns is
+whatever is *underneath* the id you gave it; it does not first climb up to find
+the coordinator on your behalf. Pass a worker instead of the coordinator and
+you get that worker's own subtree — usually nothing, since a worker has no
+children of its own.
+
+Pass the coordinator's id, the one you created first and gave no
+`parent_session_id`, and the whole crew comes back.
+
+**The opposite symptom — every session in the organization, not just your
+crew — means the reverse mistake: `root` was left off the request entirely.**
+Both `GET /v1/sessions` and `GET /v1/events` are organisation-wide without it,
+by design.
+
+An id from another organization, or one that never existed, is not a silent
+empty list either way — `root` is refused outright, with `not_found` naming
+the id, precisely so a mistyped id does not look like a legitimately small
+crew.
+
+→ [sessions.md](/sessions#crews) · [pagination.md](/pagination)
+
+---
+
 ## Anything else
 
 Every error carries a `request_id`:

@@ -3,8 +3,9 @@ title: "Pagination"
 description: "A collection has more rows than one page, or you need to find a session by your own id"
 ---
 Every collection in this API pages the same way, so learning it once is enough.
-This page also covers the two filters on `GET /v1/sessions`, which are what a
-restarted process asks first.
+This page also covers the five filters on `GET /v1/sessions`, which are what a
+restarted process — or a coordinator with several agents working on one thing —
+asks first.
 
 ## Parameters
 
@@ -37,20 +38,34 @@ nothing.
 
 ## Filtering sessions
 
-`GET /v1/sessions` takes two filters on top of those, and they are the two
-questions a process asks after losing its own state:
+`GET /v1/sessions` takes five filters on top of those, each one answering a
+different question about the collection a list is otherwise organisation-wide:
 
 ```bash
-# What is waiting on my code right now?
+# Who owes me an answer? — status
 curl -s "$GOBARE_API/v1/sessions?status=requires_action" -H "Authorization: Bearer $GOBARE_TOKEN"
 
-# Which session was job 8842?
+# Did my code make this, or did a person in the Console? — source
+curl -s "$GOBARE_API/v1/sessions?source=api" -H "Authorization: Bearer $GOBARE_TOKEN"
+
+# Which of these are mine, when another integration shares this organization? — created_by_token
+curl -s "$GOBARE_API/v1/sessions?created_by_token=me" -H "Authorization: Bearer $GOBARE_TOKEN"
+
+# Which session was job 8842? — metadata
 curl -s "$GOBARE_API/v1/sessions?metadata=job:8842" -H "Authorization: Bearer $GOBARE_TOKEN"
+
+# Who is in this group? — root, the whole tree under a coordinator, itself included
+curl -s "$GOBARE_API/v1/sessions?root=$COORDINATOR_ID" -H "Authorization: Bearer $GOBARE_TOKEN"
 ```
 
 Each listed session carries its own `required_actions`, so a restarted worker
 can find everything it owes an answer to in one call and answer without a
 second one.
+
+`root` is the only one of the five that names another session rather than a
+value: it walks `parent_session_id` down from the id you pass, so passing a
+leaf of the tree — not the coordinator — returns only that leaf. See
+[AGENTS.md](/AGENTS) §2 for how a session joins a tree in the first place.
 
 ## Unknown parameters
 
