@@ -55,6 +55,58 @@ curl -s -X POST $GOBARE_API/v1/sessions \
 `metadata` can also be changed later with `PATCH /v1/sessions/{id}`, which takes
 any combination of those and `title`.
 
+## Five complete requests
+
+Every field above in isolation, rather than assembled — five real, complete
+`POST /v1/sessions` bodies, each run against production before being written
+down here, for five distinct reasons to create one.
+
+**A computer with nothing running on it yet.** No `input` — the agent waits
+for a first message rather than starting a turn immediately. Useful when your
+service decides what to say after the sandbox exists, not before.
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json'   -d '{"agent":{"model":"MiniMax-M3"}}'
+```
+
+**A computer that starts working immediately.** The quickstart's shape —
+`input` at creation runs the first turn without a second call.
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json'   -d '{"agent":{"model":"MiniMax-M3"},"input":"Say hello and nothing else."}'
+```
+
+**Labeled so a restarted process can find it again.** `title` for a person
+reading the Console, `metadata` for your own code — see
+[pagination.md](/pagination) for `?metadata=job:8842`.
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json'   -d '{"agent":{"model":"MiniMax-M3"},"title":"nightly-report","metadata":{"job":"8842"}}'
+```
+
+**A worker joining a crew.** `parent_session_id` names the coordinator; the
+tree it joins is read back with `?root=` on the coordinator's id — see
+[Crews](#crews) below.
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json'   -d "{"agent":{"model":"MiniMax-M3"},"title":"scout","parent_session_id":"$COORDINATOR"}"
+```
+
+**With a function tool declared up front**, rather than added with
+`PUT /v1/sessions/{id}/tools` afterward — both reach the same place, and
+declaring it at creation means the agent has it from the first turn.
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json'   -d '{"agent":{"model":"MiniMax-M3","tools":[{
+        "type":"function","name":"lookup_order",
+        "description":"Fetch an order from the billing system by id.",
+        "parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"]}
+      }]}}'
+```
+
+See [required-actions.md](/required-actions) for answering the call this
+produces.
+
 ## Crews
 
 Several sessions working on one task are a tree, not a new kind of object. Pass
