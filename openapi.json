@@ -770,8 +770,9 @@
               },
               "file.changed": {
                 "path": "/workspace/src/export.ts",
-                "kind": "modified",
-                "diff": "@@ -1,3 +1,4 @@\n…"
+                "changeType": "modified",
+                "diff": "@@ -1,3 +1,4 @@\n…",
+                "toolCallId": "call_53ce8a1f"
               },
               "approval.requested": {
                 "toolCallId": "call_9a1f20bd",
@@ -783,7 +784,8 @@
               },
               "approval.resolved": {
                 "toolCallId": "call_9a1f20bd",
-                "approved": true
+                "approved": false,
+                "code": "denied_by_rule"
               },
               "question.asked": {
                 "toolCallId": "call_7be1c4d0",
@@ -1747,6 +1749,122 @@
           },
           "deleted": {
             "type": "boolean"
+          }
+        }
+      },
+      "AgentDeleted": {
+        "type": "object",
+        "required": [
+          "object",
+          "id",
+          "deleted"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "agent.deleted",
+            "description": "Always `agent.deleted`. Names the shape, so a value can be identified without knowing which call returned it."
+          },
+          "id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "EnvironmentTemplateDeleted": {
+        "type": "object",
+        "required": [
+          "object",
+          "id",
+          "deleted"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "environment_template.deleted",
+            "description": "Always `environment_template.deleted`. Names the shape, so a value can be identified without knowing which call returned it."
+          },
+          "id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ArtifactDeleted": {
+        "type": "object",
+        "required": [
+          "object",
+          "id",
+          "deleted"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "artifact.deleted",
+            "description": "Always `artifact.deleted`. Names the shape, so a value can be identified without knowing which call returned it."
+          },
+          "id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "WebhookDeleted": {
+        "type": "object",
+        "required": [
+          "object",
+          "id",
+          "deleted"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "webhook.deleted",
+            "description": "Always `webhook.deleted`. Names the shape, so a value can be identified without knowing which call returned it."
+          },
+          "id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ModelCredentialDeleted": {
+        "type": "object",
+        "required": [
+          "object",
+          "id",
+          "deleted"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "model_credential.deleted",
+            "description": "Always `model_credential.deleted`. Names the shape, so a value can be identified without knowing which call returned it."
+          },
+          "id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "sessions_moved": {
+            "type": "integer",
+            "description": "How many sessions were running on this connection and were moved to another, or left with none."
+          },
+          "moved_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model credential those sessions moved to, or null when none was left — the next turn on any of them will say so."
           }
         }
       },
@@ -4470,7 +4588,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Deleted"
+                  "$ref": "#/components/schemas/WebhookDeleted"
                 }
               }
             }
@@ -4885,7 +5003,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Deleted"
+                  "$ref": "#/components/schemas/ArtifactDeleted"
                 }
               }
             }
@@ -5799,7 +5917,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Deleted"
+                  "$ref": "#/components/schemas/AgentDeleted"
                 }
               }
             }
@@ -6215,7 +6333,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Deleted"
+                  "$ref": "#/components/schemas/EnvironmentTemplateDeleted"
                 }
               }
             }
@@ -6452,7 +6570,7 @@
     },
     "/v1/model-credentials": {
       "get": {
-        "summary": "List model connections",
+        "summary": "List model credentials",
         "description": "List the organization's model connections.",
         "operationId": "get_model_credentials",
         "security": [
@@ -6557,7 +6675,7 @@
         }
       },
       "post": {
-        "summary": "Connect a model provider",
+        "summary": "Connect a model credential",
         "description": "Connect a model provider with one of your own keys.",
         "operationId": "post_model_credentials",
         "security": [
@@ -6674,7 +6792,7 @@
     },
     "/v1/model-credentials/{credential_id}": {
       "delete": {
-        "summary": "Remove a model connection",
+        "summary": "Remove a model credential",
         "description": "Remove a model connection.",
         "operationId": "delete_model_credentials_credential_id_",
         "security": [
@@ -6701,7 +6819,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Deleted"
+                  "$ref": "#/components/schemas/ModelCredentialDeleted"
                 }
               }
             }

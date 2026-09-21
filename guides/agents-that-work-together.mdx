@@ -83,7 +83,11 @@ One stream carries the whole crew, and nothing else in your organization:
 const stream = await fetch(`${API}/v1/events?root=${ROOT}`, { headers });
 
 for await (const event of frames(stream)) {
-  if (event.type !== "session.action_required") continue;
+  // "session.action_required" is the *webhook* topic for this — see
+  // required-actions.md. On this SSE stream the same fact arrives as
+  // `tool.required`, and filtering on the other name means this switchboard
+  // receives nothing at all.
+  if (event.type !== "tool.required") continue;
 
   const session = await get(`/v1/sessions/${event.session_id}`);
   for (const action of session.required_actions) {
@@ -166,7 +170,7 @@ machines, so a file moves through you:
 ```ts
 const arts = await get(`/v1/sessions/${from}/artifacts`);
 const body = await raw(`/v1/sessions/${from}/artifacts/${arts.data[0].id}/content`);
-await post(`/v1/sessions/${to}/files`, { files: [{ type: "file", path: "/workspace/in/report.md", data: body }] });
+await post(`/v1/sessions/${to}/files`, { files: [{ type: "inline", path: "/workspace/in/report.md", data: body }] });
 ```
 
 Slower than a shared disk, and the reason to prefer it is the same reason the

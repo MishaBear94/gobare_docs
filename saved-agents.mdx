@@ -10,6 +10,18 @@ same way — a support bot, an extraction worker, a reviewer. A session created
 from an agent gets a **copy**, so changing or deleting the agent never reaches
 into work already running.
 
+**What this saves, and what it does not.** `model`, `instructions`, `tools`
+and `text` travel with it — nothing else does. `approval_mode` and
+`permission_rules` are not fields on an agent at all, so a session started
+from one is always `approval_mode: "auto"` — the mode that acts without
+asking — whatever the sessions you built the agent from were running as.
+There is no field to set here that changes that and no warning if you assume
+otherwise: save a support bot you think of as `read_only`, and every session
+it starts is `auto`. If the sessions must be constrained, set
+`approval_mode` and `permission_rules` on each `POST /v1/sessions` — see
+[Approval mode and permission rules](/sessions#approval-mode-and-permission-rules)
+— every time, not once on the agent.
+
 ## Creating one
 
 ```bash

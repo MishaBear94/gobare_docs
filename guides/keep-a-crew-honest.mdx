@@ -56,18 +56,26 @@ const instructions =
 
 **Then make the absence visible.** Prompt wording is a nudge, not a guarantee,
 and the failure is silent by construction — a claim and a delivery look the
-same in the room. Count the deliveries instead. They are items, so you can read
-them back:
+same in the room. Count the deliveries instead.
+
+**Not by reading the transcript back and guessing which lines are relayed
+messages.** A relayed message and something a person typed into the same room
+are the same shape — `type: "message"`, `role: "user"` — and matching on a
+prefix such as `@` catches a person addressing a teammate with `@handle` too,
+crediting a delivery nobody made. That is the exact mistake this page opened
+with: a heuristic standing in for a fact your own code already has.
+
+Count it where the fact actually is — your switchboard is the one making the
+`input.message` call, so it is the one that knows a delivery happened:
 
 ```ts
-async function deliveriesTo(sessionId: string): Promise<number> {
-  const page = await get(`/v1/sessions/${sessionId}/items?limit=100`);
-  return page.data.filter(
-    (item: any) =>
-      item.type === "message" &&
-      item.role === "user" &&
-      item.content.startsWith("@"), // whatever prefix your switchboard writes
-  ).length;
+const delivered = new Map<string, number>(); // teammate id → count
+
+async function relay(to: string, text: string) {
+  await post(`/v1/sessions/${to}/events`, {
+    events: [{ type: "input.message", content: [{ type: "input_text", text }] }],
+  });
+  delivered.set(to, (delivered.get(to) ?? 0) + 1);
 }
 ```
 

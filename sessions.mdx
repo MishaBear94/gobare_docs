@@ -392,9 +392,14 @@ may actually do. Two different jobs; instructions are not a permission system.
 
 Two things worth knowing before you rely on them:
 
-- **They take effect on the session's next workspace, not mid-turn.** The
-  system prompt is fixed when the agent's session is built. A `PATCH` during a
-  running turn is not ignored — it applies from the next one.
+- **They take effect on the session's next workspace, not the next turn.**
+  The system prompt is fixed when the agent's session is built, and a running
+  session does not rebuild it mid-life. A `PATCH` during a running turn is not
+  ignored — it is stored and reads back correctly — but the running agent
+  keeps the instructions it started with until the workspace is rebuilt
+  (paused-and-woken does not count; a fresh boot does). The same is true of
+  [`PUT /tools`](/tools#does-put-reach-a-running-session) — a read-back
+  that matches what you sent is not the same claim as the agent having it.
 - **A session older than this feature refuses them.** Setting instructions on a
   workspace whose runtime predates them answers
   [`bridge_incompatible`](/errors) rather than accepting the field and running

@@ -123,7 +123,7 @@ curl -X PUT https://api.gobare.dev/v1/sessions/$SESSION/tools \
 | `name` | What the agent sees this server called. Unique within the session |
 | `url` | An MCP endpoint over streamable HTTP |
 | `authorization` / `headers` | Sent on connect. Use these for the server's own credentials |
-| `command` / `args` / `env_refs` | For a stdio server started in the sandbox |
+| `command` / `args` | For a stdio server started in the sandbox |
 | `allowed_tools` | Narrow the server to these tools. Omit to allow all of them |
 | `required` | See below. **Defaults to `false`** |
 
@@ -182,6 +182,31 @@ wait out.
 `required` must be `true` or `false`. A string — `"required": "yes"` — is
 refused rather than read as `false`, because `false` is a real choice here and
 not one you would have made by writing the word required.
+
+---
+
+## Does PUT reach a running session?
+
+`PUT /v1/sessions/{id}/tools` answers `200`, and `GET /v1/sessions/{id}/tools`
+reads back exactly what you sent. Neither means the agent already running has
+it.
+
+**Verified against production:** a session was created with one function
+tool, allowed to complete its first turn, then given a second tool with
+`PUT`. `GET` read both tools back correctly. Asked on its next turn to call
+the second one by name, the agent answered: *"There's no tool named `tool_b`
+in my available set — only `tool_a` exists."* The new tool reached the
+control plane's record of the session and nothing else.
+
+The tool list is fixed when the session's workspace is built, the same as
+[instructions](/sessions#instructions) — a `PUT` changes what a *new*
+workspace for this session will start with, not what the current one is
+running. Paused-and-woken does not rebuild it; a session that is torn down
+and recreated does.
+
+If a session needs a new tool immediately, the reliable way is to give it one
+from the start, or to accept that the change reaches the next workspace
+rather than the current turn.
 
 ---
 

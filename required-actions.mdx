@@ -25,9 +25,9 @@ curl -s -X PUT $GOBARE_API/v1/sessions/$SESSION/tools \
       }]}'
 ```
 
-The same call takes `mcp` servers and `skill` entries; `PUT` replaces the whole
-configuration rather than merging, so send the complete list every time. You can
-also pass `agent.tools` when creating the session.
+The same call takes `mcp` servers and the built-in tools too; `PUT` replaces
+the whole configuration rather than merging, so send the complete list every
+time. You can also pass `agent.tools` when creating the session.
 
 ## Noticing
 

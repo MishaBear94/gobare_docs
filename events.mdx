@@ -7,7 +7,7 @@ Server-sent events, resumable. Two streams:
 | | |
 | --- | --- |
 | `GET /v1/sessions/{session_id}/events` | One session |
-| `GET /v1/events` | Every session the organization owns |
+| `GET /v1/events` | Every session the organization owns — or `?root=` to scope it to one crew, see [sessions.md#crews](/sessions#crews) |
 
 Both need `sessions:read`.
 
@@ -141,7 +141,7 @@ The rest, briefly:
 | `user.message` | `{text}` |
 | `user.context` | `{text}` — something the session was told; no turn ran |
 | `message.queued` / `message.dequeued` | `{text, position?}` |
-| `file.changed` | `{path, kind, diff?}` — `kind` is created / modified / deleted |
+| `file.changed` | `{path, changeType, diff?, toolCallId?}` — `changeType` is created / modified / deleted, and `toolCallId` is which call caused it, when there was one |
 | `approval.requested` | `{toolCallId, name, args, sensitive}` |
 | `approval.resolved` | `{toolCallId, approved}` |
 | `question.asked` | `{toolCallId, question, options?, allowFreeform?}` |
@@ -193,7 +193,7 @@ a promise we could not withdraw.
 | `message.dequeued` | yes | A queued message started |
 | `file.changed` | yes | A workspace file was created, modified or deleted |
 | `approval.requested` | yes | The agent wants permission |
-| `approval.resolved` | yes | Permission was granted or refused. A refusal carries `name`, a `code` (`denied_read_only`, `denied_by_rule`, `approval_timeout`) and the reason the agent was given — so a tool the platform blocked is tellable from one the model never tried |
+| `approval.resolved` | yes | Permission was granted or refused. A refusal carries `name`, a `code` (`denied_read_only`, `denied_by_rule`, `approval_timeout`, `credential_inspection_denied`, `aborted`) and the reason the agent was given — so a tool the platform blocked is tellable from one the model never tried |
 | `question.asked` | yes | The agent asked a person something |
 | `question.answered` | yes | It was answered |
 | `tool.required` | yes | Your code must answer — see [required-actions.md](/required-actions) |
