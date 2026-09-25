@@ -15,11 +15,12 @@ services, publishing a preview, committing to a repository — is always present
 and is not configured here. You are choosing what it can reach *outside* the
 workspace, not what it can do inside one.
 
-All three are set with one call, which **replaces** the whole configuration:
-
-```
-PUT /v1/sessions/{session_id}/tools
-```
+**Declare them in `agent.tools`, on `POST /v1/sessions`.** The agent has them
+from its first turn, which is what every example below does.
+`PUT /v1/sessions/{session_id}/tools` can change the configuration of a
+session that already exists — see
+[Does PUT reach a running session?](#does-put-reach-a-running-session) before
+you rely on it for anything the current turn needs, because the answer is no.
 
 At most **32** tools per session; each name is **1–64** characters.
 
@@ -31,9 +32,9 @@ The sandbox already has these. Naming one is the whole request — they take no
 other field:
 
 ```bash
-curl -s -X PUT $GOBARE_API/v1/sessions/$SESSION/tools \
+curl -s -X POST $GOBARE_API/v1/sessions \
   -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
-  -d '{"tools":[{"type":"web_search"},{"type":"web_fetch"}]}'
+  -d '{"agent":{"tools":[{"type":"web_search"},{"type":"web_fetch"}]}}'
 ```
 
 | | |
@@ -66,20 +67,22 @@ tells you what you actually have rather than what you asked for.
 You declare the shape; the agent calls it; the turn stops until you answer.
 
 ```bash
-curl -X PUT https://api.gobare.dev/v1/sessions/$SESSION/tools \
+curl -s -X POST $GOBARE_API/v1/sessions \
   -H "Authorization: Bearer $GOBARE_TOKEN" \
   -H "content-type: application/json" \
   -d '{
-    "tools": [{
-      "type": "function",
-      "name": "lookup_order",
-      "description": "Look up the delivery status of an order by id.",
-      "parameters": {
-        "type": "object",
-        "properties": { "order_id": { "type": "string" } },
-        "required": ["order_id"]
-      }
-    }]
+    "agent": {
+      "tools": [{
+        "type": "function",
+        "name": "lookup_order",
+        "description": "Look up the delivery status of an order by id.",
+        "parameters": {
+          "type": "object",
+          "properties": { "order_id": { "type": "string" } },
+          "required": ["order_id"]
+        }
+      }]
+    }
   }'
 ```
 
@@ -103,19 +106,21 @@ Exactly one of `url` or `command`:
 - **`command`** — a process started inside the sandbox, spoken to over stdio.
 
 ```bash
-curl -X PUT https://api.gobare.dev/v1/sessions/$SESSION/tools \
+curl -s -X POST $GOBARE_API/v1/sessions \
   -H "Authorization: Bearer $GOBARE_TOKEN" \
   -H "content-type: application/json" \
   -d '{
-    "tools": [{
-      "type": "mcp",
-      "name": "docs",
-      "url": "https://mcp.example.com/mcp",
-      "headers": { "x-api-key": "…" },
-      "allowed_tools": ["search", "fetch"],
-      "required": true
-    }]
-  }'
+    "agent": {
+      "tools": [{
+        "type": "mcp",
+        "name": "docs",
+        "url": "https://mcp.example.com/mcp",
+        "headers": { "x-api-key": "…" },
+        "allowed_tools": ["search", "fetch"],
+        "required": true
+      }]
+    }
+  }' | jq -r .id
 ```
 
 | Field | Meaning |
@@ -132,6 +137,38 @@ not pass through our control plane — which is what lets an MCP server on your
 private network be reachable at all, and keeps our egress out of your blast
 radius. A server reachable only from your VPC works if the sandbox is in it;
 one behind your office firewall does not.
+
+### What the sandbox can run
+
+If you use `command`, this is what is already there to start:
+
+| | |
+| --- | --- |
+| Node 22, with `npm` and `npx` | `command: "npx", args: ["-y", "<package>"]` |
+| Python 3, with `uv` and `uvx` | `command: "uvx", args: ["<package>"]` |
+| `git`, `curl`, `jq`, `ripgrep`, `build-essential` | For a server that shells out |
+| Playwright, with Chromium | For a server that drives a browser itself |
+
+So the two commonest MCP distribution shapes — `npx -y <package>` and
+`uvx <package>` — work with nothing installed first.
+
+### A stdio server has no way to receive a secret, yet
+
+Every MCP client in the ecosystem hands a stdio server its credentials through
+the environment. This one cannot: the tool object has no `env` field, and
+there is nowhere else to put a value a `command` process would see as a
+variable.
+
+```json
+{ "type": "mcp", "name": "whatever", "command": "npx", "args": ["-y", "@some/mcp-server"] }
+```
+
+That starts — the binaries above are all there — but it starts with no
+credentials, and a server that requires one over the environment cannot be
+configured through `/v1` at all yet. Until `env` exists, a server of that
+shape needs a remote HTTP endpoint that accepts a header instead, so its
+secret goes in `authorization` or `headers` on a `url` entry rather than
+`command`.
 
 ### When a server cannot be reached
 
@@ -183,6 +220,35 @@ wait out.
 refused rather than read as `false`, because `false` is a real choice here and
 not one you would have made by writing the word required.
 
+### Confirm the configuration took
+
+`POST /v1/sessions` answers `201`, and its `agent` object does not include
+`tools` at all — so a `201` is not evidence your server was configured, only
+that the request was accepted. Read it back:
+
+```bash
+curl $GOBARE_API/v1/sessions/$SID/tools -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+The shape, and what `redacted` means, is in
+[Reading the configuration back](#reading-the-configuration-back) below.
+
+### Confirm it was actually used
+
+A completed turn is not a tool call, and a model that cannot reach a server
+still produces a plausible-looking answer — it knows what that answer is
+supposed to look like, and says it anyway. Check rather than trust:
+
+```bash
+curl "$GOBARE_API/v1/sessions/$SID/items?limit=30" -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+Look for `tool_call` entries naming your server — `mcp_s_<name>_<tool>` — and
+then, the first time you wire a new server up, check one fact the agent
+reported against the upstream system yourself, through a different path than
+the agent used. Matching answers mean the agent actually reached it. An
+agent's own account of its own tool use is the weakest evidence available.
+
 ---
 
 ## Does PUT reach a running session?
@@ -213,8 +279,7 @@ rather than the current turn.
 ## Reading the configuration back
 
 ```bash
-curl https://api.gobare.dev/v1/sessions/$SESSION/tools \
-  -H "Authorization: Bearer $GOBARE_TOKEN"
+curl $GOBARE_API/v1/sessions/$SESSION/tools -H "Authorization: Bearer $GOBARE_TOKEN"
 ```
 
 ```json
@@ -239,6 +304,109 @@ secrets, or build the body from your own source.
 
 ---
 
+## Demos
+
+Every field above is real; these are the three shapes worth actually running,
+in order of how often you'll reach for them. Each does the whole loop this
+page just walked through: create with the tool attached, read the
+configuration back, then confirm a real call happened rather than trusting
+the agent's account of it.
+
+### A remote server, bearer-authenticated — Linear
+
+Verified end to end against production: a personal API key, sent straight as
+`Authorization: Bearer`, no OAuth flow. Two endpoints —
+`https://mcp.linear.app/mcp/readonly` for reads,
+`https://mcp.linear.app/mcp` for reads and writes — which makes "the agent
+cannot modify my tracker" a property of the URL you chose rather than a
+sentence in a prompt.
+
+```bash
+SID=$(curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "agent": {
+      "instructions": "You have a Linear MCP server attached. Every fact about Linear must come from a tool call.",
+      "tools": [{ "type": "mcp", "name": "linear",
+        "url": "https://mcp.linear.app/mcp/readonly",
+        "authorization": "Bearer '"$LINEAR_KEY"'",
+        "required": true, "allowed_tools": ["list_issues", "get_issue"] }]
+    },
+    "input": "List the open issues in the Gobare team."
+  }' | jq -r .id)
+```
+
+The full run this was verified against — the exact team id it returned, a
+real issue it later created on the read-write endpoint, and what an
+unreachable server looks like when `required: true` catches it — is in
+[Give an agent your tracker](/guides/give-an-agent-your-tracker).
+
+### A local stdio server — `npx`, no network account needed
+
+No vendor, no key — the server ships in the package, and the sandbox already
+has `npx`. Good for trying the whole loop once before you point it at
+anything real.
+
+```bash
+SID=$(curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "agent": {
+      "instructions": "You have an MCP server named local attached. Call its echo tool with the message '"'"'gobare-docs-check'"'"' and report exactly what it returned.",
+      "tools": [{ "type": "mcp", "name": "local",
+        "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"],
+        "required": true }]
+    },
+    "input": "Do it now."
+  }' | jq -r .id)
+
+until [ "$(curl -s "$GOBARE_API/v1/sessions/$SID/turns?limit=1" \
+  -H "Authorization: Bearer $GOBARE_TOKEN" | jq -r '.data[0].status // "pending"')" = "completed" ]; do
+  sleep 2
+done
+
+curl -s "$GOBARE_API/v1/sessions/$SID/items?limit=10" -H "Authorization: Bearer $GOBARE_TOKEN" \
+  | jq '.data[] | select(.type=="tool_call") | .detail'
+```
+
+Verified against production: the tool call lands as `mcp_s_local_echo`, with
+`args: {"message":"gobare-docs-check"}` on the way in and
+`summary: "Echo: gobare-docs-check"` on the way back — the same fact the
+`tool_call` items page is checked against, independent of what the agent's
+own final message claims.
+
+### A hosted server from a second vendor — GitHub
+
+The same shape as the Linear demo above, against a different provider, is
+worth seeing once precisely because the config barely changes:
+
+```bash
+SID=$(curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "agent": {
+      "instructions": "You have a GitHub MCP server attached. Call get_me and report the login it returns.",
+      "tools": [{ "type": "mcp", "name": "github",
+        "url": "https://api.githubcopilot.com/mcp/",
+        "authorization": "Bearer '"$GITHUB_TOKEN"'",
+        "required": true, "allowed_tools": ["get_me"] }]
+    },
+    "input": "Do it now."
+  }' | jq -r .id)
+```
+
+`https://api.githubcopilot.com/mcp/` answers a plain bearer token with a
+working MCP handshake — no OAuth dance, same as Linear. A token scoped to
+read-only is enough for `get_me`; narrow `allowed_tools` to what the task
+actually needs before you hand over anything broader.
+
+Verified against production, with a token holding **no scopes at all**: the
+`tool_call` item came back as `mcp_s_github_get_me`, and the `login` and `id`
+in its result matched a direct, independent `GET https://api.github.com/user`
+with the same token — not the agent's own summary of what it saw.
+
+---
+
 ## Refusals
 
 | You sent | You get |
@@ -248,7 +416,7 @@ secrets, or build the body from your own source.
 | Two MCP servers with the same name | `400 invalid_request`, naming the duplicate |
 | Both `url` and `command`, or neither | `400 invalid_request` — exactly one |
 | A `url` that will not parse | `400 invalid_request` |
-| `POST` instead of `PUT` | `400 invalid_request` — the tool set is replaced, not appended |
+| `POST` instead of `PUT`, on the standalone tools endpoint | `400 invalid_request` — the tool set is replaced, not appended |
 | An unknown field | `400 invalid_request`, naming the field |
 | An unknown field **inside a tool entry** — `allowedTools` for `allowed_tools`, `cmd` for `command`, `timeout` for `timeout_seconds` | `400 invalid_request`, naming the field and listing what the entry accepts |
 | `redacted`, sent back from a read | `400 invalid_request` — re-send the secret itself |
@@ -259,4 +427,5 @@ Every refusal carries `{ error: { code, message, request_id } }` — see
 ## Next
 
 - [required actions](/required-actions) — answer a call the agent makes
+- [Give an agent your tracker](/guides/give-an-agent-your-tracker) — the Linear demo above, in full, with the numbers from the run
 - [extracting structured data](/guides/extracting-structured-data) — shape what comes back
