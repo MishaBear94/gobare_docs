@@ -1287,6 +1287,23 @@
           "text": {
             "$ref": "#/components/schemas/TextConfig",
             "description": "Shaping the final message: how much it says, and whether it must conform to a JSON Schema."
+          },
+          "approval_mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "per_step",
+              "read_only",
+              "plan"
+            ],
+            "description": "How freely sessions from this agent act. Omitted means the agent says nothing about approvals and a session falls through to `auto` — the mode that acts without asking. A session may override it per field, the same way it overrides `model`."
+          },
+          "permission_rules": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Rules sessions from this agent start with. Replaced whole by a session that sends its own, never merged — a half-merged rule list is ambiguous about which half won."
           }
         }
       },
