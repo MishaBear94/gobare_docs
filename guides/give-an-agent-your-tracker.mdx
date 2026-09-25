@@ -1,0 +1,205 @@
+---
+title: "Give an agent your tracker"
+description: "Attach a remote MCP server to a session so the agent reads and writes Linear itself, with the credential handling that requires"
+---
+**The shape:** one `mcp` tool on session create, pointed at a hosted MCP
+server, authenticated with a bearer token. The agent calls the tracker
+directly; nothing in your dispatcher has to shuttle issue text back and forth.
+
+Worth it when the agent needs what you cannot pre-load: comments, linked
+issues, the state of a ticket at the moment it acts. If all it needs is a
+title and a body you already have, put them in `input` and skip the
+credential entirely — that is a smaller system and it cannot leak anything.
+
+This guide was written by running it against Linear on production. The
+numbers and failures in it are from that run.
+
+## What you need
+
+| | |
+| --- | --- |
+| A Gobare token | `sessions:read`, `sessions:write` |
+| A tracker API key | Linear: Settings → Security & access → Personal API keys |
+| Nothing else | No OAuth flow, no callback URL, no app install |
+
+Linear's MCP server accepts `Authorization: Bearer <key>` directly, which is
+what makes this a two-minute setup rather than an OAuth integration. Two
+endpoints:
+
+| URL | |
+| --- | --- |
+| `https://mcp.linear.app/mcp/readonly` | reads only |
+| `https://mcp.linear.app/mcp` | reads and writes |
+
+**Start on the read-only endpoint.** "The agent will not modify my tracker" is
+then a property of the URL, not a sentence in your prompt. Move to the
+read-write one when you actually want writes, as a separate decision.
+
+## Create the session
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" \
+  -H "content-type: application/json" \
+  -H "Idempotency-Key: triage-$TICKET" \
+  -d '{
+    "title": "Triage '"$TICKET"'",
+    "agent": {
+      "instructions": "You have a Linear MCP server attached. Use it. Do not guess or fabricate Linear data — every fact about Linear must come from a tool call. If a tool call fails, say exactly what failed rather than working around it.",
+      "tools": [
+        { "type": "mcp",
+          "name": "linear",
+          "url": "https://mcp.linear.app/mcp/readonly",
+          "authorization": "Bearer '"$LINEAR_KEY"'",
+          "required": true,
+          "allowed_tools": ["list_issues", "get_issue", "list_comments"] }
+      ]
+    },
+    "input": "Summarise the open issues in the Gobare team and flag any that have been untouched for more than 14 days."
+  }'
+```
+
+### The three fields that matter
+
+**`required: true`** — the session fails if the server does not come up.
+Without it a broken MCP server produces an agent that runs happily and
+answers from nothing, which is the failure you find out about last. Pay one
+loud failure now.
+
+**`allowed_tools`** — narrows what the agent can call to the tools you named.
+A read-only endpoint plus a narrow allowlist is two independent limits;
+either one alone is a promise, both together is a boundary.
+
+**`instructions`** — "every fact must come from a tool call" is not
+politeness. Without it a model that fails to reach the server will still
+produce a plausible-looking list of issues, because it knows what Linear
+output looks like.
+
+### Field reference
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `type` | `"mcp"` | |
+| `name` | string | Your label; appears in tool names the model sees |
+| `url` | string | Remote server. Exactly one of `url` or `command` |
+| `command` + `args` | string, string[] | Local stdio server inside the sandbox |
+| `authorization` | string | Held, never echoed back |
+| `headers` | object | Values held; names come back |
+| `allowed_tools` | string[] | Omit to allow everything the server offers |
+| `required` | boolean | `true` = the session fails if the server does not start |
+
+## Confirm it attached, before you trust the answer
+
+`POST /v1/sessions` returns `201` and its `agent` object **does not include
+`tools`**. The create response is therefore no evidence at all that your
+server was configured. Read it back:
+
+```bash
+curl $GOBARE_API/v1/sessions/$SID/tools \
+  -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+```json
+{
+  "object": "session.tools",
+  "tools": [
+    { "type": "mcp", "name": "linear",
+      "url": "https://mcp.linear.app/mcp/readonly",
+      "required": true,
+      "redacted": ["authorization"] }
+  ]
+}
+```
+
+`redacted` names what was withheld. That is how you tell a server with no
+credential from one whose credential is simply not shown — and it is why you
+cannot read this object, edit it and `PUT` it back: `redacted` is not a
+request field, so that round trip is refused rather than silently replacing
+your credential with nothing.
+
+## Confirm the agent actually called it
+
+A completed turn is not a tool call. Read the items:
+
+```bash
+curl "$GOBARE_API/v1/sessions/$SID/items?limit=30" \
+  -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+You are looking for `tool_call` entries. In the run behind this guide the
+agent made two of them and reported one team, `Gobare` / `64b99ff4-…`.
+
+Then check that answer against the tracker yourself, with the same key,
+through a different path:
+
+```bash
+curl https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_KEY" -H "content-type: application/json" \
+  -d '{"query":"{ teams { nodes { id key name } } }"}'
+```
+
+Matching ids mean the agent read Linear. This is worth doing once when you
+wire a new MCP server up, and worth doing again the first time an answer
+surprises you. An agent's own account of its own tool use is the least
+reliable evidence available.
+
+## Writing
+
+Same tool, read-write URL. In the run behind this guide the agent created a
+real issue — `GOB-8`, 1982 characters of description — from one instruction
+naming the team id and the content.
+
+Two things to keep:
+
+**Verify the object, not the report.** The agent said "Issue created
+successfully" and gave an identifier. That sentence would read identically if
+the call had failed and the model had invented the identifier. Fetch the
+issue.
+
+```bash
+curl https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_KEY" -H "content-type: application/json" \
+  -d '{"query":"{ issue(id:\"GOB-8\") { identifier title url createdAt creator { email } } }"}'
+```
+
+**Give the team id, not the team name.** Names are ambiguous and models
+resolve ambiguity by choosing. Ids fail loudly.
+
+## What this costs you in exposure
+
+Be deliberate about this before you paste a key.
+
+- The credential is **held, not echoed** — it does not appear in any `/v1`
+  response, including the tool configuration read-back.
+- It is **not in the event stream** and not in the control plane's logs.
+- It **is stored** by the control plane so the sandbox can be rebuilt with
+  the same tools. Treat it the way you would treat a key in any third-party
+  system you hand it to.
+
+So: mint a key for this purpose, scope it as narrowly as the provider allows,
+and rotate it on the same schedule you would rotate any other shared
+integration key. Prefer the read-only endpoint whenever the task does not
+genuinely need to write.
+
+## A shape that does not work yet
+
+MCP servers that take their secret from an **environment variable** cannot be
+configured through `/v1` at all. The tool object accepts `command` and `args`
+for a local stdio server, but there is no `env` field, so there is nowhere to
+put the key.
+
+```json
+{ "type": "mcp", "name": "whatever",
+  "command": "npx", "args": ["-y", "@some/mcp-server"] }
+```
+
+That runs — the sandbox ships node/npx, python3/uv/uvx, git and
+build-essential — but it starts with no credentials. Until `env` exists,
+servers of that shape need a remote HTTP endpoint that accepts a header
+instead.
+
+## Next
+
+- [tools](/tools) — the full tool-configuration reference
+- [sessions](/sessions) — every field `POST /v1/sessions` accepts
+- [Fix a GitHub issue and open the pull request](/guides/fix-a-github-issue) — the same "give it a system" shape, applied to git instead of a tracker

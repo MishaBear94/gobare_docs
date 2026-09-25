@@ -45,7 +45,9 @@
           "guides/switching-model-providers",
           "guides/agents-that-work-together",
           "guides/keep-a-crew-honest",
-          "guides/parallel-ticket-fleet"
+          "guides/parallel-ticket-fleet",
+          "guides/give-an-agent-your-tracker",
+          "guides/fix-a-github-issue"
         ]
       },
       {
