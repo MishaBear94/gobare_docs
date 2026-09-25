@@ -1,0 +1,184 @@
+---
+title: "Receive webhooks on Cloudflare Workers"
+description: "Verify, deduplicate and answer inside the ten-second window, then do the work in waitUntil — with no server of your own"
+---
+**The shape:** one Worker is the whole backend. It verifies each delivery,
+drops duplicates with a KV lookup, answers `200` immediately, and reads the
+session afterwards in `ctx.waitUntil`. Here the work is storing each finished
+turn's reply in KV; replace `handle` with yours.
+
+The verifier uses only Web Crypto, so the same function runs on Workers,
+Deno, Bun and Node 20+ unchanged.
+
+## The Worker
+
+```typescript
+export interface Env {
+  GOBARE_API: string;
+  GOBARE_TOKEN: string;
+  GOBARE_WEBHOOK_SECRET: string;
+  SEEN: KVNamespace;
+  RESULTS: KVNamespace;
+}
+
+interface GobareEvent {
+  object: "event";
+  type: string;
+  created_at: number;
+  data: { session_id: string; turn_id?: string | null; required_action?: { type: string } };
+}
+
+const encoder = new TextEncoder();
+
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> | null {
+  if (!/^[0-9a-f]+$/i.test(hex) || hex.length % 2 !== 0) return null;
+  const out = new Uint8Array(new ArrayBuffer(hex.length / 2));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+export async function verify(secret: string, timestamp: string, body: string, presented: string): Promise<boolean> {
+  const signature = hexToBytes(presented);
+  if (!signature) return false;
+  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  return crypto.subtle.verify("HMAC", key, signature, encoder.encode(`${timestamp}.${body}`));
+}
+
+async function api(env: Env, path: string): Promise<any> {
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(`${env.GOBARE_API}${path}`, { headers: { authorization: `Bearer ${env.GOBARE_TOKEN}` } }).catch(() => null);
+    if (res && res.status < 500) {
+      if (!res.ok) throw new Error(`${path} answered ${res.status}: ${await res.text()}`);
+      return res.json();
+    }
+    if (attempt === 4) throw new Error(`${path}: ${res ? res.status : "network error"} after ${attempt} attempts`);
+    await new Promise((r) => setTimeout(r, attempt * 1000));
+  }
+}
+
+async function handle(event: GobareEvent, env: Env): Promise<void> {
+  const { session_id, turn_id } = event.data;
+  if (event.type === "turn.completed" || event.type === "turn.failed") {
+    const session = await api(env, `/v1/sessions/${session_id}`);
+    // `turn_id` is null when the event had no turn record; the latest turn is the one it means.
+    const turn = turn_id
+      ? await api(env, `/v1/sessions/${session_id}/turns/${turn_id}`)
+      : (await api(env, `/v1/sessions/${session_id}/turns?limit=1`)).data[0];
+    const items = await api(env, `/v1/sessions/${session_id}/items?limit=20`);
+    const reply = items.data.find((item: any) => item.type === "message" && item.role === "assistant");
+    await env.RESULTS.put(session_id, JSON.stringify({
+      metadata: session.metadata,
+      status: turn?.status ?? null,
+      error: turn?.error ?? null,
+      reply: reply?.content ?? null,
+    }));
+  }
+}
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
+
+    const body = await request.text();
+    const timestamp = request.headers.get("x-gobare-timestamp") ?? "";
+    const signature = request.headers.get("x-gobare-signature") ?? "";
+
+    if (!(await verify(env.GOBARE_WEBHOOK_SECRET, timestamp, body, signature))) {
+      return new Response("bad signature", { status: 401 });
+    }
+    if (Math.abs(Date.now() - Number(timestamp)) > 5 * 60_000) {
+      return new Response("stale delivery", { status: 400 });
+    }
+
+    const event = JSON.parse(body) as GobareEvent;
+    const key = `${event.data.session_id}:${event.type}:${event.created_at}`;
+    if (await env.SEEN.get(key)) return new Response("duplicate", { status: 200 });
+    await env.SEEN.put(key, "1", { expirationTtl: 60 * 60 * 24 });
+
+    ctx.waitUntil(handle(event, env));
+    return new Response("ok");
+  },
+};
+```
+
+`crypto.subtle.verify` does the comparison, which makes it constant-time by
+construction — there is no hex-string equality to get wrong.
+
+**Signature first, then the clock.** Checking the timestamp before the
+signature would let an unauthenticated caller learn your tolerance window. The
+order above rejects anything unsigned without saying why.
+
+**A turn event can carry `turn_id: null`** — when there was no turn record to
+name. `handle` reads the latest turn instead of building `/turns/null`, which
+would fail inside `waitUntil` where nobody sees it.
+
+**The dedupe key is `session_id`, `type` and `created_at`.** A redelivery of
+the same event carries the same three. See [webhooks](/webhooks).
+
+## Configuration
+
+```toml
+name = "gobare-hooks"
+main = "worker.ts"
+compatibility_date = "2026-09-01"
+
+kv_namespaces = [
+  { binding = "SEEN", id = "<your SEEN namespace id>" },
+  { binding = "RESULTS", id = "<your RESULTS namespace id>" },
+]
+
+[vars]
+GOBARE_API = "https://api.gobare.dev"
+```
+
+```bash
+npx wrangler secret put GOBARE_TOKEN
+npx wrangler secret put GOBARE_WEBHOOK_SECRET
+npx wrangler deploy
+```
+
+Then subscribe the Worker's URL:
+
+```bash
+curl -s -X POST $GOBARE_API/v1/webhooks \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"url":"https://gobare-hooks.your-account.workers.dev","events":["turn.completed","turn.failed"]}'
+```
+
+`KVNamespace` and `ExecutionContext` come from `@cloudflare/workers-types`,
+which `wrangler init` installs.
+
+## What `waitUntil` does not promise
+
+The delivery is marked seen and answered `200` before `handle` runs. If
+`handle` then fails, Gobare will not retry — as far as it knows, you have it.
+
+For work that must not be lost, send the event to a
+[Cloudflare Queue](https://developers.cloudflare.com/queues/) instead of
+`waitUntil`, and do the work in the queue consumer, which retries on its own.
+The webhook route stays the same: verify, dedupe, enqueue, answer.
+
+## What was verified
+
+The Worker's `fetch` handler was run under Node 24 — whose `Request`,
+`Response` and `crypto.subtle` are the same Web APIs Workers provides — with KV
+replaced by an in-memory map. Every Gobare API call went to production, and
+every delivery was signed with Gobare's own signing function:
+
+| Delivery | Answer |
+| --- | --- |
+| Signed, current | `200 ok`, and the stored result held the session's `metadata`, `status: "completed"` and the agent's reply |
+| The same delivery again | `200 duplicate`, no second read |
+| Body changed after signing | `401 bad signature` |
+| Timestamp ten minutes old | `400 stale delivery` |
+| Timestamp converted to seconds | `400 stale delivery` — the trap [webhooks](/webhooks) warns about, caught rather than accepted |
+
+Not verified: the Workers runtime itself, and KV's eventual consistency — two
+deliveries of one event reaching two data centres within the same second can
+both pass the `SEEN` check. `handle` reads current state, so running twice is
+harmless here; if yours is not, dedupe in a Durable Object instead.
+
+## Next
+
+- [Test a webhook handler without production](/integrations/testing-webhook-handlers) — the test suite for exactly this Worker
+- [webhooks](/webhooks) — signature, retries, ordering

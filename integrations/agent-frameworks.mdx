@@ -1,0 +1,200 @@
+---
+title: "Give your agent framework a computer"
+description: "One function that runs a task on a Gobare sandbox, exposed as a tool to the Vercel AI SDK and the OpenAI Agents SDK"
+---
+**The shape:** you already have an agent — a loop around a model, in a
+framework you chose. What it lacks is a computer: somewhere to run the code it
+writes, keep files between steps, install a package. Give it one tool that
+hands a task to a Gobare session and returns what happened.
+
+Your framework stays in charge. Gobare is the hands, not the brain.
+
+Verified with `ai` **5.0.266**, `@openai/agents` **0.18.0** and `zod`
+**4.6.5** on Node 24. The OpenAI Agents SDK requires zod 4; the AI SDK accepts
+3.25 or 4, so use 4 for both.
+
+## The function
+
+Framework-neutral: a task in, a result out. Three behaviours worth having are
+built in.
+
+```typescript
+import { randomUUID } from "node:crypto";
+
+const API = process.env.GOBARE_API ?? "https://api.gobare.dev";
+const headers = { authorization: `Bearer ${process.env.GOBARE_TOKEN}`, "content-type": "application/json" };
+
+async function call(method: string, path: string, body?: unknown): Promise<any> {
+  // One key per logical call, reused across its retries, so a retried POST cannot act twice.
+  const key: Record<string, string> = method === "POST" ? { "idempotency-key": randomUUID() } : {};
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(`${API}${path}`, { method, headers: { ...headers, ...key }, body: body === undefined ? undefined : JSON.stringify(body) }).catch(() => null);
+    if (res && res.status < 500) {
+      if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}: ${await res.text()}`);
+      return res.json();
+    }
+    if (attempt === 4) throw new Error(`${method} ${path}: ${res ? res.status : "network error"} after ${attempt} attempts`);
+    await new Promise((r) => setTimeout(r, attempt * 2000));
+  }
+}
+
+export interface SandboxResult {
+  session_id: string;
+  status: "completed" | "failed" | "cancelled" | "waiting";
+  reply: string | null;
+  question: string | null;
+  files: string[];
+}
+
+const SETTLED = new Set(["completed", "failed", "cancelled"]);
+
+export async function runInSandbox(task: string, sessionId?: string): Promise<SandboxResult> {
+  let staleTurn: string | undefined;
+  let answered: string | undefined;
+
+  if (!sessionId) {
+    sessionId = (await call("POST", "/v1/sessions", {
+      title: task.slice(0, 80),
+      agent: { instructions: "Write anything worth keeping under /workspace/outputs." },
+      input: task,
+    })).id as string;
+  } else {
+    const session = await call("GET", `/v1/sessions/${sessionId}`);
+    const question = session.required_actions.find((a: any) => a.type === "question");
+    if (question) {
+      answered = question.call_id;
+      await call("POST", `/v1/sessions/${sessionId}/events`, { events: [{ type: "input.question_answer", call_id: question.call_id, answer: task }] });
+    } else {
+      staleTurn = (await call("GET", `/v1/sessions/${sessionId}/turns?limit=1`)).data[0]?.id;
+      await call("POST", `/v1/sessions/${sessionId}/events`, { events: [{ type: "input.message", content: [{ type: "input_text", text: task }] }] });
+    }
+  }
+
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const session = await call("GET", `/v1/sessions/${sessionId}`);
+    const question = session.required_actions.find((a: any) => a.type === "question" && a.call_id !== answered);
+    if (question) return { session_id: sessionId, status: "waiting", reply: null, question: question.name, files: [] };
+
+    const turn = (await call("GET", `/v1/sessions/${sessionId}/turns?limit=1`)).data[0];
+    if (!turn || turn.id === staleTurn) continue;
+    if (!SETTLED.has(turn.status) || turn.artifacts === "pending") continue;
+
+    const items = await call("GET", `/v1/sessions/${sessionId}/items?limit=20`);
+    const reply = items.data.find((item: any) => item.type === "message" && item.role === "assistant");
+    const artifacts = await call("GET", `/v1/sessions/${sessionId}/artifacts?turn_id=${turn.id}`);
+    return { session_id: sessionId, status: turn.status, reply: reply?.content ?? null, question: null, files: artifacts.data.map((a: any) => a.path) };
+  }
+}
+```
+
+| Behaviour | Why |
+| --- | --- |
+| `session_id` continues on the same computer | Step two of a task usually needs step one's files. A fresh session per call would throw them away |
+| A pending `question` is **returned**, not waited on | The inner agent sometimes needs a decision. Your outer agent is right there and can make it; the next call with the same `session_id` delivers the answer as `input.question_answer` |
+| Waits for `artifacts` to leave `pending` | Files are published just after a turn settles. Returning on `completed` alone reports an empty file list for work that did produce files |
+| One `Idempotency-Key` per call, reused by its retries | A `POST` retried after a `502` must not create a second session |
+
+The question check reads the **session**, not the turn: while a question is
+pending the turn still reports `working`, and the session reports
+`requires_action`. A loop that watched the turn alone would never return.
+
+## Vercel AI SDK
+
+```typescript
+import { generateText, stepCountIs, tool } from "ai";
+import { z } from "zod";
+import { runInSandbox } from "./sandbox.ts";
+
+export const sandbox = tool({
+  description:
+    "Run a task on a real Linux computer with a shell, a filesystem, Node, Python and git. " +
+    "Use it to execute code, transform files, or check facts by running things. " +
+    "Pass session_id from a previous result to continue on the same computer. " +
+    "If the result has status 'waiting', its question is for you: call again with your answer as the task and the same session_id.",
+  inputSchema: z.object({
+    task: z.string().describe("What to do, in plain language, including what to report back."),
+    session_id: z.string().optional().describe("Continue on the computer a previous call used."),
+  }),
+  execute: async ({ task, session_id }) => runInSandbox(task, session_id),
+});
+
+export async function ask(model: Parameters<typeof generateText>[0]["model"], prompt: string) {
+  return generateText({ model, prompt, tools: { sandbox }, stopWhen: stepCountIs(6) });
+}
+```
+
+## OpenAI Agents SDK
+
+```typescript
+import { Agent, run, tool } from "@openai/agents";
+import { z } from "zod";
+import { runInSandbox } from "./sandbox.ts";
+
+export const sandbox = tool({
+  name: "sandbox",
+  description:
+    "Run a task on a real Linux computer with a shell, a filesystem, Node, Python and git. " +
+    "Pass session_id from a previous result to continue on the same computer. " +
+    "If the result has status 'waiting', its question is for you: call again with your answer as the task and the same session_id.",
+  parameters: z.object({
+    task: z.string(),
+    session_id: z.string().nullable(),
+  }),
+  execute: async ({ task, session_id }) => JSON.stringify(await runInSandbox(task, session_id ?? undefined)),
+});
+
+export const analyst = new Agent({
+  name: "analyst",
+  instructions: "When a question needs computation or real data processing, use the sandbox tool rather than estimating.",
+  tools: [sandbox],
+});
+
+export async function ask(prompt: string) {
+  return (await run(analyst, prompt)).finalOutput;
+}
+```
+
+`session_id` is `nullable()` rather than `optional()` here: the Agents SDK
+sends tool schemas to OpenAI in strict mode, where every property must be
+present and absence is spelled `null`.
+
+## Cleaning up
+
+These tools do not delete their sessions, because the next call may continue
+on them. Delete them when the conversation ends — or, for a request-scoped
+agent, in a `finally` after the framework's run returns:
+
+```bash
+curl -s -X DELETE $GOBARE_API/v1/sessions/$SESSION_ID -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+An idle session pauses on its own and stops costing sandbox time, but it keeps
+its concurrency slot until it is deleted. See [limits](/limits).
+
+## What was verified
+
+Run against production. The outer model was the AI SDK's own
+`MockLanguageModelV2` — a scripted stand-in that emits a real tool call — so the
+framework's tool loop ran for real and only the model's choice was fixed:
+
+- **A computed answer, checked independently.** The tool was asked for the
+  SHA-256 of the string `gobare`, written to `/workspace/outputs/hash.txt`. The
+  digest in the tool result matched one computed locally, and `files` listed
+  `/workspace/outputs/hash.txt`. The AI SDK recorded two steps: the tool call,
+  then the answer.
+- **Continuation.** The OpenAI Agents SDK tool, invoked with the previous
+  `session_id`, printed the same file back — same computer, file intact.
+- **A question passed up and answered.** Asked to check with the caller
+  before choosing csv or json, the inner agent's call returned
+  `status: "waiting"` with its question; calling again with `json` and the same
+  `session_id` completed with `/workspace/outputs/data.json`.
+
+Not verified: a real model choosing to call the tool. That is the framework's
+behaviour and your prompt's, not this function's.
+
+## Next
+
+- [sessions](/sessions) — what else a session can be given at creation
+- [required actions](/required-actions) — questions, approvals and function calls
+- [Put an agent behind your own API](/guides/an-agent-behind-your-api) — the same idea without a framework

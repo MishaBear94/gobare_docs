@@ -1,0 +1,258 @@
+---
+title: "Run a session inside a Temporal workflow"
+description: "A session as one durable step: created once however often the activity retries, woken by a webhook, finished by polling if the webhook never comes"
+---
+**The shape:** one workflow per unit of work. The workflow's activities create
+the session, collect its answer and delete it; a small webhook receiver turns
+Gobare's `turn.completed` into a Temporal signal that wakes the workflow. If
+that webhook never arrives, the workflow notices and polls instead.
+
+Verified with `@temporalio/client`, `worker`, `workflow`, `activity` and
+`testing` **1.24.0** on Node 24.
+
+## Why these pieces
+
+| Decision | Why |
+| --- | --- |
+| `Idempotency-Key` is the workflow id | Temporal retries an activity whose result it did not record. Without the key, a retry after a slow `201` creates a second session; with it, the retry replays the first |
+| The workflow id is stored in the session's `metadata` | The webhook names only the session. `metadata.workflow_id` is how the receiver knows which workflow to signal, without a lookup table of its own |
+| A signal, not an activity that waits | An activity that polls for twenty minutes holds a worker slot for twenty minutes. A signal costs nothing while nobody is working |
+| A polling fallback after a timeout | Webhooks are retried six times over about nine hours, then given up on. A workflow must not depend on something that can, in the end, not arrive |
+| `deleteSession` is the last activity | The session holds a concurrency slot until it is deleted. Your answer is in the workflow's result now |
+
+Session creation is an activity, never workflow code. Workflow code must be
+deterministic, and an HTTP call is the opposite of that.
+
+## Activities
+
+Every call to Gobare. Temporal's retry policy — five attempts below — is the
+only retry loop; the activities themselves do not retry.
+
+```typescript
+const API = process.env.GOBARE_API ?? "https://api.gobare.dev";
+const headers = { authorization: `Bearer ${process.env.GOBARE_TOKEN}`, "content-type": "application/json" };
+
+async function call(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<any> {
+  const res = await fetch(`${API}${path}`, { method, headers: { ...headers, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.status === 404 && method === "DELETE") return null;
+  if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+export interface Ticket { id: string; title: string; body: string }
+
+export async function startSession(ticket: Ticket, workflowId: string): Promise<string> {
+  const session = await call("POST", "/v1/sessions", {
+    title: ticket.id,
+    metadata: { ticket: ticket.id, workflow_id: workflowId },
+    agent: { instructions: "Answer in one short paragraph. Never ask a clarifying question: state your assumption and continue." },
+    input: `${ticket.title}\n\n${ticket.body}`,
+  }, { "idempotency-key": workflowId });
+  return session.id;
+}
+
+export async function latestTurn(sessionId: string): Promise<{ id: string; status: string } | null> {
+  const turns = await call("GET", `/v1/sessions/${sessionId}/turns?limit=1`);
+  return turns.data[0] ?? null;
+}
+
+export async function collectReply(sessionId: string, turnId: string): Promise<{ status: string; reply: string | null }> {
+  const turn = await call("GET", `/v1/sessions/${sessionId}/turns/${turnId}`);
+  const items = await call("GET", `/v1/sessions/${sessionId}/items?limit=20`);
+  const reply = items.data.find((item: any) => item.type === "message" && item.role === "assistant");
+  return { status: turn.status, reply: reply?.content ?? null };
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await call("DELETE", `/v1/sessions/${sessionId}`);
+}
+```
+
+`Never ask a clarifying question` is in the instructions because this workflow
+has no one to ask. A session parked on a `question` reports its turn as
+`working`, so the fallback poll would keep waiting until the workspace's
+two-hour ceiling. If your work needs a person, send the question somewhere a
+person is — [Put an agent in a Slack thread](/integrations/slack) — and signal
+the workflow with the answer.
+
+## The workflow
+
+```typescript
+import { condition, defineSignal, proxyActivities, setHandler, workflowInfo } from "@temporalio/workflow";
+import type * as activities from "./activities.ts";
+
+const { startSession, latestTurn, collectReply, deleteSession } = proxyActivities<typeof activities>({
+  startToCloseTimeout: "1 minute",
+  retry: { maximumAttempts: 5 },
+});
+
+export const turnSettled = defineSignal<[{ turnId: string; type: "turn.completed" | "turn.failed" }]>("turnSettled");
+
+const SETTLED = new Set(["completed", "failed", "cancelled"]);
+
+export async function ticketWorkflow(ticket: activities.Ticket, fallbackAfter: string = "15 minutes"): Promise<{ sessionId: string; status: string; reply: string | null }> {
+  const sessionId = await startSession(ticket, workflowInfo().workflowId);
+
+  let settled: { turnId: string } | undefined;
+  setHandler(turnSettled, (event) => { settled ??= { turnId: event.turnId }; });
+
+  await condition(() => settled !== undefined, fallbackAfter);
+  while (!settled) {
+    const turn = await latestTurn(sessionId);
+    if (turn && SETTLED.has(turn.status)) settled = { turnId: turn.id };
+    else await condition(() => settled !== undefined, "30 seconds");
+  }
+
+  const result = await collectReply(sessionId, settled.turnId);
+  await deleteSession(sessionId);
+  return { sessionId, ...result };
+}
+```
+
+The signal handler keeps the first turn it is told about (`??=`), so a webhook
+delivered twice signals twice and changes nothing. A signal that arrives while
+the workflow is between activities is buffered by Temporal until the handler
+runs.
+
+`fallbackAfter` is an argument so a test can make it seconds. Fifteen minutes
+is a reasonable production default: long enough that a working webhook always
+wins, short enough that a lost one costs a quarter of an hour.
+
+## The webhook receiver
+
+Verifies the delivery, finds the workflow through the session's `metadata`, and
+signals it. It answers `200` for everything it does not act on — anything else
+is retried by Gobare for hours.
+
+```typescript
+import { createServer } from "node:http";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { Client, Connection, WorkflowNotFoundError } from "@temporalio/client";
+import { turnSettled } from "./workflows.ts";
+
+const API = process.env.GOBARE_API ?? "https://api.gobare.dev";
+const SECRET = process.env.GOBARE_WEBHOOK_SECRET!;
+
+function verified(timestamp: string, body: string, presented: string): boolean {
+  const expected = createHmac("sha256", SECRET).update(`${timestamp}.${body}`).digest("hex");
+  return expected.length === presented.length && timingSafeEqual(Buffer.from(expected), Buffer.from(presented))
+    && Math.abs(Date.now() - Number(timestamp)) < 5 * 60_000;
+}
+
+export async function handleDelivery(client: Client, body: string, timestamp: string, signature: string): Promise<number> {
+  if (!verified(timestamp, body, signature)) return 401;
+  const event = JSON.parse(body);
+  if (event.type !== "turn.completed" && event.type !== "turn.failed") return 200;
+  // No turn id means no turn record; the workflow's fallback poll finds the turn itself.
+  if (!event.data.turn_id) return 200;
+
+  const res = await fetch(`${API}/v1/sessions/${event.data.session_id}`, { headers: { authorization: `Bearer ${process.env.GOBARE_TOKEN}` } });
+  if (res.status === 404) return 200;
+  const workflowId = (await res.json()).metadata?.workflow_id;
+  if (!workflowId) return 200;
+
+  try {
+    await client.workflow.getHandle(workflowId).signal(turnSettled, { turnId: event.data.turn_id, type: event.type });
+  } catch (err) {
+    if (!(err instanceof WorkflowNotFoundError)) throw err;
+  }
+  return 200;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const client = new Client({ connection: await Connection.connect({ address: process.env.TEMPORAL_ADDRESS ?? "localhost:7233" }) });
+  createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", async () => {
+      const status = await handleDelivery(client, Buffer.concat(chunks).toString("utf8"),
+        String(req.headers["x-gobare-timestamp"] ?? ""), String(req.headers["x-gobare-signature"] ?? "")).catch(() => 500);
+      res.writeHead(status).end();
+    });
+  }).listen(8787);
+}
+```
+
+A turn event whose `turn_id` is `null` — there was no turn record to name — is
+not signalled; the workflow's fallback poll finds the turn itself.
+
+A workflow that already finished — it polled first, or it was cancelled —
+answers the signal with `WorkflowNotFoundError`. That is a normal outcome, not a
+failure to retry. Subscribe the receiver's URL once:
+
+```bash
+curl -s -X POST $GOBARE_API/v1/webhooks \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"url":"https://your-host.example/gobare","events":["turn.completed","turn.failed"]}'
+```
+
+## Running it
+
+The worker, which runs the workflow code and the activities:
+
+```typescript
+import { NativeConnection, Worker } from "@temporalio/worker";
+import { fileURLToPath } from "node:url";
+import * as activities from "./activities.ts";
+
+const connection = await NativeConnection.connect({ address: process.env.TEMPORAL_ADDRESS ?? "localhost:7233" });
+const worker = await Worker.create({
+  connection,
+  taskQueue: "tickets",
+  workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+  activities,
+});
+await worker.run();
+```
+
+And the entry point your own system calls — a tracker webhook, a queue
+consumer, a button:
+
+```typescript
+import { Client, Connection, WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
+
+const client = new Client({ connection: await Connection.connect({ address: process.env.TEMPORAL_ADDRESS ?? "localhost:7233" }) });
+
+export async function onTicket(ticket: { id: string; title: string; body: string }) {
+  try {
+    await client.workflow.start("ticketWorkflow", { taskQueue: "tickets", workflowId: `ticket-${ticket.id}`, args: [ticket] });
+  } catch (err) {
+    if (!(err instanceof WorkflowExecutionAlreadyStartedError)) throw err;
+  }
+}
+```
+
+`workflowId: ticket-${id}` is Temporal's half of the idempotency: a second
+start for the same ticket is refused with `WorkflowExecutionAlreadyStartedError`
+while the first is running, so a re-delivered ticket starts nothing.
+
+## What was verified
+
+Run against production, with a local Temporal dev server
+(`TestWorkflowEnvironment.createLocal()` from `@temporalio/testing`) standing in
+for your cluster:
+
+- **The webhook path.** A workflow started, its session answered, a signed
+  `turn.completed` was delivered over HTTP to the receiver above, the receiver
+  signalled the workflow, and the workflow returned `{"status":"completed","reply":"42"}`
+  and deleted the session. The delivery was signed with Gobare's own signing
+  function rather than a copy of it, because the receiver could not be reached
+  from the internet.
+- **The fallback path.** With `fallbackAfter` at five seconds and no webhook at
+  all, the workflow polled and finished `completed` with the correct answer.
+- **Retries.** During that run an activity's connection to `api.gobare.dev`
+  timed out after ten seconds; Temporal retried it and the workflow finished
+  as if nothing had happened. That is the case this integration exists for.
+- **Idempotency.** A second `start` for a running workflow id was refused with
+  `WorkflowExecutionAlreadyStartedError`; `startSession` called twice with one
+  workflow id returned the same session both times.
+
+Not verified: a Temporal Cloud namespace, mTLS, and a workflow that outlives a
+worker restart — the last is Temporal's guarantee rather than ours, and nothing
+above depends on in-memory state.
+
+## Next
+
+- [idempotency](/idempotency) — what a replayed key returns
+- [webhooks](/webhooks) — retry schedule and signature
+- [Run a fleet of ticket-driven agents in parallel](/guides/parallel-ticket-fleet) — the same shape with a hand-rolled dispatcher instead of a workflow engine

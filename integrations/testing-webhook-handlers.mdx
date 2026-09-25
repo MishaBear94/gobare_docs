@@ -1,0 +1,182 @@
+---
+title: "Test a webhook handler without production"
+description: "Fixtures shaped like real deliveries, signed the way Gobare signs them, and one test for each trap that fails looking like a bad signature"
+---
+**The shape:** a handler is a function from a request to a response. Build the
+requests Gobare would send — the same body, the same headers, the same
+signature — and assert on what comes back. Stub the Gobare API the handler
+reads from, and nothing touches production.
+
+The suite below tests the Worker from
+[Receive webhooks on Cloudflare Workers](/integrations/cloudflare-workers), but
+nothing in it is about Workers: any handler written as `Request → Response`
+drops in. It runs on Node's built-in test runner with no dependencies.
+
+## The suite
+
+```typescript
+import { test, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
+import worker, { type Env } from "./worker.ts";
+
+const SECRET = "whsec_test";
+const SESSION = "3f9c1b60-4e2a-4d18-9a77-6c0b2e5d81af";
+const TURN = "turn_21c17d7a76de4338a4e2cc2f";
+
+const fixtures = {
+  completed: { object: "event", type: "turn.completed", created_at: 1790345031466, data: { session_id: SESSION, turn_id: TURN } },
+  failed: { object: "event", type: "turn.failed", created_at: 1790345031999, data: { session_id: SESSION, turn_id: TURN } },
+  actionRequired: { object: "event", type: "session.action_required", created_at: 1790345029549, data: { session_id: SESSION, required_action: { type: "question" } } },
+};
+
+const api: Record<string, unknown> = {
+  [`/v1/sessions/${SESSION}`]: { object: "session", id: SESSION, metadata: { order: "A-4471" } },
+  [`/v1/sessions/${SESSION}/turns/${TURN}`]: { object: "turn", id: TURN, status: "completed", error: null },
+  [`/v1/sessions/${SESSION}/turns?limit=1`]: { object: "list", data: [{ object: "turn", id: TURN, status: "completed", error: null }] },
+  [`/v1/sessions/${SESSION}/items?limit=20`]: { object: "list", data: [{ type: "message", role: "assistant", content: "shipped" }] },
+};
+
+function sign(timestamp: string, body: string): string {
+  return createHmac("sha256", SECRET).update(`${timestamp}.${body}`).digest("hex");
+}
+
+function kv(): KVNamespace & { size(): number } {
+  const map = new Map<string, string>();
+  return { get: async (k) => map.get(k) ?? null, put: async (k, v) => { map.set(k, v); }, size: () => map.size };
+}
+
+let env: Env & { RESULTS: ReturnType<typeof kv> };
+let pending: Promise<unknown>[];
+let calls: string[];
+
+beforeEach(() => {
+  env = { GOBARE_API: "https://api.gobare.test", GOBARE_TOKEN: "gbr_pat_test", GOBARE_WEBHOOK_SECRET: SECRET, SEEN: kv(), RESULTS: kv() };
+  pending = [];
+  calls = [];
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const path = String(input).replace(env.GOBARE_API, "");
+    calls.push(path);
+    return path in api ? Response.json(api[path]) : new Response("not found", { status: 404 });
+  }) as typeof fetch;
+});
+
+async function deliver(event: object, options: { timestamp?: string; signature?: string; body?: string } = {}) {
+  const body = options.body ?? JSON.stringify(event);
+  const timestamp = options.timestamp ?? String(Date.now());
+  const request = new Request("https://hooks.example/gobare", {
+    method: "POST",
+    body,
+    headers: { "x-gobare-timestamp": timestamp, "x-gobare-signature": options.signature ?? sign(timestamp, body) },
+  });
+  const response = await worker.fetch(request, env, { waitUntil: (p) => { pending.push(p); } });
+  await Promise.all(pending);
+  return response.status;
+}
+
+test("a signed delivery is accepted and handled", async () => {
+  assert.equal(await deliver(fixtures.completed), 200);
+  assert.deepEqual(JSON.parse((await env.RESULTS.get(SESSION))!), { metadata: { order: "A-4471" }, status: "completed", error: null, reply: "shipped" });
+});
+
+test("a body changed after signing is refused", async () => {
+  const timestamp = String(Date.now());
+  const body = JSON.stringify(fixtures.completed);
+  assert.equal(await deliver(fixtures.completed, { timestamp, signature: sign(timestamp, body), body: body.replace(TURN, "turn_someone_else") }), 401);
+});
+
+test("a re-serialised body is refused, which is why you verify the raw bytes", async () => {
+  const timestamp = String(Date.now());
+  const raw = JSON.stringify(fixtures.completed);
+  assert.equal(await deliver(fixtures.completed, { timestamp, signature: sign(timestamp, raw), body: JSON.stringify(JSON.parse(raw), null, 2) }), 401);
+});
+
+test("a replayed delivery from ten minutes ago is refused", async () => {
+  assert.equal(await deliver(fixtures.completed, { timestamp: String(Date.now() - 10 * 60_000) }), 400);
+});
+
+test("a timestamp converted to seconds is refused, not accepted by accident", async () => {
+  assert.equal(await deliver(fixtures.completed, { timestamp: String(Math.floor(Date.now() / 1000)) }), 400);
+});
+
+test("the same delivery twice does the work once", async () => {
+  assert.equal(await deliver(fixtures.completed), 200);
+  assert.equal(await deliver(fixtures.completed), 200);
+  assert.equal(calls.filter((c) => c.endsWith(`/turns/${TURN}`)).length, 1);
+});
+
+test("an event the handler does not act on is still answered 200, so it is not retried for hours", async () => {
+  assert.equal(await deliver(fixtures.actionRequired), 200);
+  assert.equal(env.RESULTS.size(), 0);
+});
+
+test("turn.failed arriving after turn.completed reads current state rather than trusting order", async () => {
+  await deliver(fixtures.completed);
+  await deliver(fixtures.failed);
+  assert.equal(JSON.parse((await env.RESULTS.get(SESSION))!).status, "completed");
+});
+
+test("a turn event with no turn_id is handled from the latest turn, not dropped", async () => {
+  assert.equal(await deliver({ ...fixtures.completed, data: { session_id: SESSION, turn_id: null } }), 200);
+  assert.equal(JSON.parse((await env.RESULTS.get(SESSION))!).status, "completed");
+  assert.ok(calls.includes(`/v1/sessions/${SESSION}/turns?limit=1`));
+});
+```
+
+```bash
+node --test worker.test.ts
+```
+
+Node 23.6 and later runs TypeScript directly; on earlier versions use
+`npx tsx --test worker.test.ts`.
+
+## Why each test is there
+
+Each one is a mistake that passes every test you would think to write against
+your own code, because it fails only against a sender that is not you.
+
+| Test | The mistake it catches |
+| --- | --- |
+| Body changed after signing | A verifier that checks the header exists instead of what it proves |
+| Re-serialised body | Verifying `JSON.stringify(parsed)` instead of the raw bytes — correct against your own serialiser, wrong against ours |
+| Delivery from ten minutes ago | No replay window, so a captured delivery is valid forever |
+| Timestamp in seconds | Dividing by 1000 somewhere. The timestamp is milliseconds, and this fails looking exactly like a bad signature |
+| The same delivery twice | Deliveries are at least once. A handler that is not idempotent does the work twice |
+| An event you do not act on | Answering it with a `4xx` gets it retried for nine hours |
+| `turn.failed` after `turn.completed` | Trusting arrival order. Deliveries can arrive out of order; reading current state is what makes that harmless |
+| A turn event whose `turn_id` is `null` | Building `/turns/null` and getting a `404` — inside `waitUntil`, where the failure is silent and the event is gone |
+
+## The fixtures
+
+The payloads in the suite are the shapes Gobare sends. `data` always carries
+`session_id`, and never the object itself:
+
+| Event | `data` |
+| --- | --- |
+| `turn.completed`, `turn.failed` | `session_id`, `turn_id` — which is `null` when the event had no turn record |
+| `session.action_required` | `session_id`, `required_action: { type }` |
+| `session.working`, `session.idle` | `session_id` |
+
+The signature is `HMAC-SHA256(secret, "{timestamp}.{body}")` in hex, with the
+timestamp in milliseconds — see [webhooks](/webhooks). `sign()` in the suite is
+that, and nothing else.
+
+## A real delivery, once
+
+Fixtures prove your handler against the documented shape. Before going live,
+prove the documented shape against the real thing once: subscribe a
+request-capturing endpoint you control, run one session, and diff what arrives
+against your fixture. After that the fixtures carry the weight.
+
+## What was verified
+
+The suite passes, 9 of 9, against the Worker as published. Separately, the
+Worker was sent deliveries signed by Gobare's own signing function rather than
+this suite's `sign()`, and accepted and rejected them identically — so the
+fixtures' signatures are the real algorithm, not a copy that agrees with
+itself.
+
+## Next
+
+- [webhooks](/webhooks) — the signature and delivery contract these tests encode
+- [Receive webhooks on Cloudflare Workers](/integrations/cloudflare-workers) — the handler under test

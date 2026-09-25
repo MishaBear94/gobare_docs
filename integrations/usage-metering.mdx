@@ -1,0 +1,208 @@
+---
+title: "Meter usage into Stripe and Prometheus"
+description: "Bill each of your customers for the sandbox time their sessions used, and watch what is running now — including the one ordering rule that loses data if you break it"
+---
+**The shape:** tag every session with the customer it is for. When a session
+is finished, read its usage, send it to Stripe as a meter event, then delete
+it. Separately, a Prometheus endpoint reports what exists right now.
+
+## The rule: meter, then delete
+
+**A deleted session's usage cannot be read.** `GET /v1/sessions/{id}/usage`
+answers `404` once the session is gone. So the order is fixed — read, record,
+delete — and a crash anywhere in between has to be recoverable without
+recording twice.
+
+Tag sessions when you create them:
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"metadata":{"stripe_customer":"cus_ACME"},"input":"…"}'
+```
+
+## The code
+
+```typescript
+import { createServer } from "node:http";
+
+const { GOBARE_API = "https://api.gobare.dev", GOBARE_TOKEN, STRIPE_API = "https://api.stripe.com", STRIPE_SECRET_KEY } = process.env as Record<string, string>;
+
+async function gobare(method: string, path: string, body?: unknown): Promise<any> {
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(`${GOBARE_API}${path}`, {
+      method, body: body === undefined ? undefined : JSON.stringify(body),
+      headers: { authorization: `Bearer ${GOBARE_TOKEN}`, "content-type": "application/json" },
+    }).catch(() => null);
+    if (res && res.status === 404) return null;
+    if (res && res.status < 500) {
+      if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}: ${await res.text()}`);
+      return res.json();
+    }
+    if (attempt === 4) throw new Error(`${method} ${path}: ${res ? res.status : "network error"} after ${attempt} attempts`);
+    await new Promise((r) => setTimeout(r, attempt * 2000));
+  }
+}
+
+async function meterEvent(identifier: string, customer: string, value: number, timestamp: number): Promise<"recorded" | "duplicate"> {
+  const res = await fetch(`${STRIPE_API}/v1/billing/meter_events`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${STRIPE_SECRET_KEY}`, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      event_name: "sandbox_seconds",
+      "payload[stripe_customer_id]": customer,
+      "payload[value]": String(value),
+      identifier,
+      timestamp: String(timestamp),
+    }),
+  });
+  if (res.ok) return "recorded";
+  const error = (await res.json()).error;
+  if (res.status === 400 && /identifier/i.test(error?.message ?? "") && /already/i.test(error?.message ?? "")) return "duplicate";
+  throw new Error(`Stripe answered ${res.status}: ${error?.message}`);
+}
+
+/**
+ * Meter a session, then delete it — in that order, because a deleted session's
+ * usage can no longer be read. Safe to call again after a crash at any step.
+ */
+export async function closeSession(sessionId: string): Promise<string> {
+  const session = await gobare("GET", `/v1/sessions/${sessionId}`);
+  if (!session) return "already deleted";
+  const customer = session.metadata.stripe_customer;
+
+  if (customer && !session.metadata.metered) {
+    const usage = await gobare("GET", `/v1/sessions/${sessionId}/usage`);
+    const outcome = await meterEvent(`gobare-${sessionId}`, customer, usage.sandbox_seconds, Math.floor(usage.as_of / 1000));
+    await gobare("PATCH", `/v1/sessions/${sessionId}`, { metadata: { ...session.metadata, metered: String(usage.sandbox_seconds) } });
+    await gobare("DELETE", `/v1/sessions/${sessionId}`);
+    return `${outcome} ${usage.sandbox_seconds}s for ${customer}, deleted`;
+  }
+  await gobare("DELETE", `/v1/sessions/${sessionId}`);
+  return customer ? `already metered (${session.metadata.metered}s), deleted` : "no customer to bill, deleted";
+}
+
+// ── Prometheus: what is running right now, per customer ─────────────────────
+
+async function liveSessions(): Promise<any[]> {
+  const all: any[] = [];
+  let after = "";
+  for (;;) {
+    const page = await gobare("GET", `/v1/sessions?limit=100${after ? `&after=${after}` : ""}`);
+    all.push(...page.data);
+    if (!page.has_more) return all;
+    after = page.last_id;
+  }
+}
+
+let cache: { at: number; text: string } | undefined;
+
+export async function metrics(): Promise<string> {
+  if (cache && Date.now() - cache.at < 60_000) return cache.text;
+  const sessions = await liveSessions();
+  const count = new Map<string, number>();
+  const seconds = new Map<string, number>();
+  for (const session of sessions) {
+    const customer = session.metadata?.stripe_customer ?? "none";
+    const key = `customer="${customer}",status="${session.status}"`;
+    count.set(key, (count.get(key) ?? 0) + 1);
+    const usage = await gobare("GET", `/v1/sessions/${session.id}/usage`);
+    if (usage) seconds.set(customer, (seconds.get(customer) ?? 0) + usage.sandbox_seconds);
+  }
+  const lines = [
+    "# HELP gobare_sessions Sessions that exist right now.",
+    "# TYPE gobare_sessions gauge",
+    ...[...count].map(([labels, n]) => `gobare_sessions{${labels}} ${n}`),
+    "# HELP gobare_live_sandbox_seconds Sandbox seconds held by sessions that still exist. Falls when a session is deleted; bill from the meter, not from this.",
+    "# TYPE gobare_live_sandbox_seconds gauge",
+    ...[...seconds].map(([customer, s]) => `gobare_live_sandbox_seconds{customer="${customer}"} ${s}`),
+  ];
+  cache = { at: Date.now(), text: `${lines.join("\n")}\n` };
+  return cache.text;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  createServer(async (req, res) => {
+    if (req.url !== "/metrics") return res.writeHead(404).end();
+    res.writeHead(200, { "content-type": "text/plain; version=0.0.4" }).end(await metrics());
+  }).listen(Number(process.env.PORT ?? 9464));
+}
+```
+
+## How a crash is survived
+
+`closeSession` is safe to call again after failing at any step, because each
+step leaves evidence the next attempt reads:
+
+| Crashed after | The next call |
+| --- | --- |
+| Reading usage | Starts over. Nothing was recorded |
+| Stripe recorded the event | Sends it again with the same `identifier`; Stripe refuses the duplicate, which is treated as done |
+| Marking `metered` in `metadata` | Sees the mark, skips Stripe, deletes |
+| Deleting | Gets `404` for the session and returns |
+
+The session's own `metadata` is the ledger, so there is no database of your own
+to keep in step. Stripe's `identifier` — `gobare-{session_id}` — covers the one
+window the mark cannot: Stripe enforces its uniqueness for at least 24 hours.
+
+## Which number to bill
+
+`GET .../usage` returns several:
+
+| | |
+| --- | --- |
+| `sandbox_seconds` | Everything accounted for, including time not yet reconciled. Readable at any moment |
+| `chargeable_seconds` | The reconciled part. Lags — in testing it was `0` for a session that had just finished |
+| `needs_review_intervals` | A count of intervals nobody can account for yet |
+
+This page bills `sandbox_seconds`, because it is the only number that is final
+by the time you delete. It is your quantity to bill your customers with, not a
+copy of Gobare's bill to you. See [sessions](/sessions#what-a-crew-cost).
+
+**An idle session is still accruing.** In testing, three idle sessions' usage
+rose from 23 to 30 seconds between reading the metrics and closing them. Close
+sessions when the work is done, not when a sweep gets round to it.
+
+## Prometheus
+
+`metrics()` is a scrape target. `gobare_live_sandbox_seconds` falls when a
+session is deleted, so it is a gauge of what is running — alert on it, graph
+it, but bill from the meter.
+
+```yaml
+scrape_configs:
+  - job_name: gobare
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["metering.internal:9464"]
+```
+
+Each scrape reads every session's usage, one call each. The 60-second cache
+keeps that inside the [rate limit](/limits); the organization's concurrent
+session ceiling keeps the list short.
+
+## What was verified
+
+Run against production, with a local mock of Stripe's
+`POST /v1/billing/meter_events` that refused a repeated `identifier` with a
+`400`:
+
+- **Metrics.** Three sessions for three customers produced one
+  `gobare_sessions` and one `gobare_live_sandbox_seconds` line per customer.
+- **A clean close** recorded `25` seconds for `cus_ACME` and deleted the session.
+- **A crash after marking** skipped Stripe and deleted.
+- **A crash before marking** re-sent, was refused as a duplicate, marked and
+  deleted; Stripe kept the first attempt's value.
+- **A third call** on a deleted session returned without error.
+
+Stripe received exactly one event per session.
+
+**Not verified: Stripe's real answer to a duplicate `identifier`.** Stripe
+documents the uniqueness, not the response. The mock answers `400` with a
+message naming the identifier, and `meterEvent` matches on that. Send a
+duplicate in test mode once and adjust the match before relying on it.
+
+## Next
+
+- [limits](/limits) — the concurrency ceiling a live session holds
+- [Run a fleet of ticket-driven agents in parallel](/guides/parallel-ticket-fleet) — deleting on `turn.completed`, which is where `closeSession` belongs

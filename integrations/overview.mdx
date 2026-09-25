@@ -1,0 +1,62 @@
+---
+title: "Integrations"
+description: "Gobare inside the systems you already run — workflow engines, agent frameworks, CI, chat, serverless, billing"
+---
+The [guides](/guides) show what a session can do, with nothing but the
+standard library. These pages are the other half: how a session fits into
+something you already operate, where the other system has its own rules about
+retries, timeouts and who is allowed to wait.
+
+Every page here names third-party packages, so every page says which versions
+it was run against. And every page says, at the bottom, exactly what was run
+against production and what was stood in for by a local mock — because the
+Gobare side of an integration can be proved end to end, but a Slack workspace
+or a Stripe account usually cannot be borrowed for a test.
+
+| I already run… | And I want… | Page |
+| --- | --- | --- |
+| Temporal | A session to be one durable step of a workflow, surviving restarts and retries | [Run a session inside a Temporal workflow](/integrations/temporal) |
+| Vercel AI SDK or the OpenAI Agents SDK | My agent to have a real computer to run code on, as a tool | [Give your agent framework a computer](/integrations/agent-frameworks) |
+| GitHub Actions | Every pull request reviewed, with the review posted back to the PR | [Review pull requests in GitHub Actions](/integrations/github-actions) |
+| Slack | People to hand work to an agent in a thread, and answer its questions there | [Put an agent in a Slack thread](/integrations/slack) |
+| Cloudflare Workers | To receive Gobare webhooks with no server of my own | [Receive webhooks on Cloudflare Workers](/integrations/cloudflare-workers) |
+| Stripe, Prometheus | To bill my customers for the sandbox time they used, and to see it live | [Meter usage into Stripe and Prometheus](/integrations/usage-metering) |
+| Any webhook receiver | To test my handler against every trap without touching production | [Test a webhook handler without production](/integrations/testing-webhook-handlers) |
+
+## The four rules every page follows
+
+These are the same four decisions made four different ways, because each host
+system forces a different answer. Knowing them makes the pages shorter to read.
+
+**The other system's retry is your idempotency key.** Temporal retries an
+activity, Slack re-delivers an event it thinks you missed, a CI job is
+re-run. Each one has a stable id for "this is the same attempt" — the
+workflow id, `event_id`, the run id and attempt — and that id goes in
+`Idempotency-Key`, so a retry replays the session it already created instead
+of starting a second one. See [idempotency](/idempotency).
+
+**Answer the caller first, work afterwards.** Slack wants a response in 3
+seconds, Gobare's webhook delivery in 10, a Worker's request is billed while
+it is open. Verify, acknowledge, then do the slow part — `waitUntil`, a
+signal, a background task.
+
+**Read the object, not the event.** A webhook names the session and the turn;
+it never carries them. Every handler here fetches current state, which is also
+why a delivery arriving twice or out of order is harmless. See
+[webhooks](/webhooks).
+
+**The session is disposable; delete it when you have what you need.** A
+session holds one of the organization's concurrent-session slots until it is
+deleted, and an idle one keeps accruing sandbox time until it pauses. Every
+page ends its flow with a `DELETE` — and the metering page shows the one
+thing that has to happen before it.
+
+## Something every integration meets
+
+**A pending question does not change the turn's status.** While the agent is
+waiting on a `question`, `GET .../turns` still reports the turn as `working`;
+the signal is on the session — `status: "requires_action"` and an entry in
+`required_actions`. A loop that waits for the turn alone waits forever. The
+[Slack](/integrations/slack) and [agent framework](/integrations/agent-frameworks)
+pages both branch on the session for this reason. See
+[required actions](/required-actions).

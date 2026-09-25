@@ -1,0 +1,245 @@
+---
+title: "Review pull requests in GitHub Actions"
+description: "Every pull request reviewed by an agent, the review kept as one comment that updates on each push, and the job failing on a blocking finding"
+---
+**The shape:** a workflow on `pull_request` runs one script. The script sends
+the PR's diff to a session, collects a structured review, and posts it as a
+single comment it edits on every later push. A blocking finding fails the job.
+
+The script is standard library only — `node review.mjs`, nothing to install.
+
+## The workflow
+
+```yaml
+name: agent review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: agent-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node .github/scripts/review.mjs
+        env:
+          GOBARE_TOKEN: ${{ secrets.GOBARE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+```
+
+`cancel-in-progress` stops the review of a commit that has already been
+superseded. That kills the script mid-run, which is why the script deletes its
+session on `SIGTERM` — see below.
+
+**Pull requests from forks get no secrets** under `pull_request`, so the job
+fails for them. Do not switch to `pull_request_target` to fix that without
+reading GitHub's guidance on it: that event runs with your secrets against
+code you have not reviewed.
+
+## The script
+
+```javascript
+import { readFile } from "node:fs/promises";
+
+const {
+  GOBARE_API = "https://api.gobare.dev", GOBARE_TOKEN,
+  GITHUB_API_URL = "https://api.github.com", GITHUB_TOKEN, GITHUB_REPOSITORY,
+  GITHUB_EVENT_PATH, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT = "1",
+} = process.env;
+
+const MARKER = "<!-- gobare-review -->";
+const pr = JSON.parse(await readFile(GITHUB_EVENT_PATH, "utf8")).pull_request;
+
+function github(path, init = {}) {
+  return fetch(`${GITHUB_API_URL}${path}`, {
+    ...init,
+    headers: { authorization: `Bearer ${GITHUB_TOKEN}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...init.headers },
+  });
+}
+
+async function gobare(method, path, body, headers = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(`${GOBARE_API}${path}`, {
+        method, body: body && JSON.stringify(body),
+        headers: { authorization: `Bearer ${GOBARE_TOKEN}`, "content-type": "application/json", ...headers },
+      });
+      if (res.status >= 500 && attempt < 4) throw new Error(`${res.status}`);
+      if (!res.ok) throw Object.assign(new Error(`${method} ${path}: ${res.status} ${await res.text()}`), { final: true });
+      return res.json();
+    } catch (err) {
+      if (err.final || attempt >= 4) throw err;
+      await new Promise((r) => setTimeout(r, attempt * 2000));
+    }
+  }
+}
+
+const diff = await (await github(`/repos/${GITHUB_REPOSITORY}/pulls/${pr.number}`, { headers: { accept: "application/vnd.github.diff" } })).text();
+
+const schema = {
+  type: "object",
+  required: ["summary", "findings"],
+  properties: {
+    summary: { type: "string" },
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["file", "severity", "comment"],
+        properties: {
+          file: { type: "string" },
+          line: { type: ["integer", "null"] },
+          severity: { enum: ["blocking", "suggestion", "nit"] },
+          comment: { type: "string" },
+        },
+      },
+    },
+  },
+};
+
+const session = await gobare("POST", "/v1/sessions", {
+  title: `${GITHUB_REPOSITORY}#${pr.number}`,
+  metadata: { repo: GITHUB_REPOSITORY, pr: String(pr.number), sha: pr.head.sha },
+  agent: {
+    instructions: [
+      "You review pull requests. Read the whole diff before commenting.",
+      "Only report problems you can point at in the diff; an empty findings list is a valid review. Never ask a question.",
+      `Write the review to /workspace/outputs/review.json as JSON matching this schema, then reply "done": ${JSON.stringify(schema)}`,
+    ].join("\n"),
+  },
+  environment: { files: [{ type: "inline", path: "pr.diff", data: Buffer.from(diff).toString("base64") }] },
+  input: `Review the pull request whose unified diff is in /workspace/pr.diff.\n\nTitle: ${pr.title}\n\n${pr.body ?? ""}`,
+}, { "idempotency-key": `review-${pr.id}-${pr.head.sha}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}` });
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, async () => {
+    await gobare("DELETE", `/v1/sessions/${session.id}`).catch(() => {});
+    process.exit(130);
+  });
+}
+
+async function settledTurn(after) {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const turn = (await gobare("GET", `/v1/sessions/${session.id}/turns?limit=1`)).data[0];
+    if (!turn || turn.id === after) continue;
+    if (["failed", "cancelled"].includes(turn.status)) throw new Error(`review turn ${turn.status}: ${JSON.stringify(turn.error)}`);
+    if (turn.status === "completed" && turn.artifacts !== "pending") return turn;
+  }
+}
+
+async function readReview(turn) {
+  const artifacts = await gobare("GET", `/v1/sessions/${session.id}/artifacts?turn_id=${turn.id}`);
+  const file = artifacts.data.find((a) => a.path.endsWith("/review.json"));
+  if (!file) return { problem: "/workspace/outputs/review.json was not written" };
+  const res = await fetch(`${GOBARE_API}/v1/sessions/${session.id}/artifacts/${file.id}/content`, { headers: { authorization: `Bearer ${GOBARE_TOKEN}` } });
+  try {
+    const review = JSON.parse(await res.text());
+    if (typeof review.summary !== "string" || !Array.isArray(review.findings)) return { problem: "summary must be a string and findings an array" };
+    const bad = review.findings.find((f) => !["blocking", "suggestion", "nit"].includes(f.severity) || typeof f.file !== "string");
+    if (bad) return { problem: `finding ${JSON.stringify(bad)} does not match the schema` };
+    return { review };
+  } catch (err) {
+    return { problem: `review.json is not valid JSON: ${err.message}` };
+  }
+}
+
+try {
+  let turn = await settledTurn();
+  let { review, problem } = await readReview(turn);
+  if (problem) {
+    await gobare("POST", `/v1/sessions/${session.id}/events`, { events: [{ type: "input.message", content: [{ type: "input_text", text: `${problem}. Write /workspace/outputs/review.json again, matching the schema exactly.` }] }] });
+    turn = await settledTurn(turn.id);
+    ({ review, problem } = await readReview(turn));
+    if (problem) throw new Error(`the review is still unusable after one correction: ${problem}`);
+  }
+
+  const icon = { blocking: "🛑", suggestion: "💡", nit: "·" };
+  const body = [
+    MARKER,
+    `### Agent review of \`${pr.head.sha.slice(0, 7)}\``,
+    review.summary,
+    ...review.findings.map((f) => `- ${icon[f.severity]} **${f.severity}** \`${f.file}${f.line ? `:${f.line}` : ""}\` — ${f.comment}`),
+  ].join("\n\n");
+
+  const comments = await (await github(`/repos/${GITHUB_REPOSITORY}/issues/${pr.number}/comments?per_page=100`)).json();
+  const mine = comments.find((c) => c.body?.startsWith(MARKER));
+  const res = mine
+    ? await github(`/repos/${GITHUB_REPOSITORY}/issues/comments/${mine.id}`, { method: "PATCH", body: JSON.stringify({ body }) })
+    : await github(`/repos/${GITHUB_REPOSITORY}/issues/${pr.number}/comments`, { method: "POST", body: JSON.stringify({ body }) });
+  if (!res.ok) throw new Error(`posting the review answered ${res.status}: ${await res.text()}`);
+  console.log(`${mine ? "updated" : "posted"} review: ${review.findings.length} finding(s)`);
+
+  if (review.findings.some((f) => f.severity === "blocking")) process.exitCode = 1;
+} finally {
+  await gobare("DELETE", `/v1/sessions/${session.id}`);
+}
+```
+
+Five choices in it that are not obvious:
+
+**The diff goes in as a file, not in the prompt.** `environment.files` puts it
+at `/workspace/pr.diff`, where the agent can read, grep and re-read it. A file
+may be 5 MiB; a whole request body without files is 1 MiB. See
+[limits](/limits).
+
+**No repository connection is needed.** The session holds the diff and
+nothing else — no clone, no credential to your repository — which also means
+nothing it does can reach your code.
+
+**The review is a file, and the script checks it.** A schema in the
+instructions is a request, not a guarantee. The agent writes
+`/workspace/outputs/review.json`; the script parses and validates it, and on a
+bad one sends a single correction and reads again. In testing, a reply-only
+version of this script failed on its first run because the agent's reply began
+with prose. See
+[Turn documents into structured JSON](/guides/extracting-structured-data).
+
+**One comment, found by a marker.** `<!-- gobare-review -->` opens the comment,
+so the next push edits it rather than stacking a new one on the PR.
+
+**The idempotency key includes the run and attempt.** Within one run, a retried
+`POST` replays the same session. "Re-run job" is a new attempt and gets a fresh
+review — the previous attempt's session is already deleted, and a key that
+replayed it would point at nothing.
+
+GitHub's own API address is read from `GITHUB_API_URL`, which Actions sets.
+That is also what makes the script testable against a mock.
+
+## What was verified
+
+Run against production, with a local mock of the GitHub API standing in for
+github.com — it served a real diff and recorded the comments:
+
+- **A real pull request.** The diff of
+  [expressjs/express#7459](https://github.com/expressjs/express/pull/7459),
+  fetched from GitHub, was reviewed; the agent summarised the fix correctly and
+  reported no findings. The job passed.
+- **A bad one.** A diff that replaced a parameterised query with an
+  interpolated one produced two `blocking` findings — the SQL injection, and the
+  signature change that broke existing callers — and the job exited `1`.
+- **Re-runs.** A second run on the same PR edited comment `#1` rather than
+  posting a second one.
+- **Cancellation.** `SIGTERM` eight seconds into a run exited `130` and left no
+  session behind.
+
+Not verified: GitHub itself — permissions, fork behaviour and the Actions
+runner were not exercised.
+
+## Next
+
+- [Fix a GitHub issue and open the pull request](/guides/fix-a-github-issue) — the other direction: an issue in, a PR out
+- [sessions](/sessions) — files at creation
+- [errors](/errors) — every refusal the script can meet

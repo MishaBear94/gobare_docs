@@ -51,6 +51,19 @@
         ]
       },
       {
+        "group": "Integrations",
+        "pages": [
+          "integrations/overview",
+          "integrations/temporal",
+          "integrations/agent-frameworks",
+          "integrations/github-actions",
+          "integrations/slack",
+          "integrations/cloudflare-workers",
+          "integrations/usage-metering",
+          "integrations/testing-webhook-handlers"
+        ]
+      },
+      {
         "group": "Client libraries",
         "pages": [
           "typescript",

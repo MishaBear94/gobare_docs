@@ -1,0 +1,247 @@
+---
+title: "Put an agent in a Slack thread"
+description: "Mention the bot to start work, answer its questions in the thread, get the result in the same thread"
+---
+**The shape:** a mention starts a session and the thread becomes its
+conversation. When the agent asks a question, the question appears in the
+thread; whoever replies there answers it. The result lands in the same thread.
+
+The thread is the only state. The session's `metadata` records which channel
+and thread it belongs to, so either side can find the other with one call and
+nothing is stored anywhere else.
+
+One Node process, standard library only, two routes: `/slack/events` for Slack
+and `/gobare/events` for Gobare's webhooks.
+
+## Setting it up
+
+**In Slack:** create an app, add the bot scopes `app_mentions:read`,
+`channels:history` and `chat:write`, subscribe to the bot events
+`app_mention` and `message.channels`, and point Event Subscriptions at
+`https://your-host.example/slack/events`. Install it; keep the bot token and
+the signing secret.
+
+**In Gobare:** subscribe the other route to the three events this needs.
+
+```bash
+curl -s -X POST $GOBARE_API/v1/webhooks \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"url":"https://your-host.example/gobare/events","events":["session.action_required","turn.completed","turn.failed"]}'
+```
+
+Then run it with `GOBARE_TOKEN`, `GOBARE_WEBHOOK_SECRET`, `SLACK_BOT_TOKEN` and
+`SLACK_SIGNING_SECRET` set.
+
+## The app
+
+```typescript
+import { createServer, type IncomingMessage } from "node:http";
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const {
+  GOBARE_API = "https://api.gobare.dev", GOBARE_TOKEN, GOBARE_WEBHOOK_SECRET,
+  SLACK_API = "https://slack.com/api", SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET,
+} = process.env as Record<string, string>;
+
+async function gobare(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<any> {
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(`${GOBARE_API}${path}`, {
+      method, body: body === undefined ? undefined : JSON.stringify(body),
+      headers: { authorization: `Bearer ${GOBARE_TOKEN}`, "content-type": "application/json", ...headers },
+    }).catch(() => null);
+    if (res && res.status < 500) {
+      if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}: ${await res.text()}`);
+      return res.json();
+    }
+    if (attempt === 4) throw new Error(`${method} ${path}: ${res ? res.status : "network error"} after ${attempt} attempts`);
+    await new Promise((r) => setTimeout(r, attempt * 2000));
+  }
+}
+
+async function say(channel: string, thread_ts: string, text: string): Promise<void> {
+  const res = await fetch(`${SLACK_API}/chat.postMessage`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${SLACK_BOT_TOKEN}`, "content-type": "application/json; charset=utf-8" },
+    body: JSON.stringify({ channel, thread_ts, text }),
+  });
+  const answer = await res.json();
+  if (!answer.ok) throw new Error(`chat.postMessage: ${answer.error}`);
+}
+
+function hmacMatches(secret: string, material: string, presented: string, prefix = ""): boolean {
+  const expected = prefix + createHmac("sha256", secret).update(material).digest("hex");
+  return expected.length === presented.length && timingSafeEqual(Buffer.from(expected), Buffer.from(presented));
+}
+
+async function sessionForThread(ts: string): Promise<any | null> {
+  const found = await gobare("GET", `/v1/sessions?metadata=slack_thread:${ts}&limit=1`);
+  return found.data[0] ? gobare("GET", `/v1/sessions/${found.data[0].id}`) : null;
+}
+
+// ── Slack → Gobare ──────────────────────────────────────────────────────────
+
+export function verifySlack(body: string, headers: IncomingMessage["headers"]): { status: number; body?: string; payload?: any } {
+  const timestamp = String(headers["x-slack-request-timestamp"] ?? "");
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return { status: 400 };
+  if (!hmacMatches(SLACK_SIGNING_SECRET, `v0:${timestamp}:${body}`, String(headers["x-slack-signature"] ?? ""), "v0=")) return { status: 401 };
+  const payload = JSON.parse(body);
+  if (payload.type === "url_verification") return { status: 200, body: payload.challenge };
+  return { status: 200, payload };
+}
+
+export async function onSlack(payload: any, retried = false): Promise<void> {
+  const event = payload.event;
+  if (!event || event.bot_id || event.subtype) return;
+
+  if (event.type === "app_mention" && !event.thread_ts) {
+    await gobare("POST", "/v1/sessions", {
+      title: event.text.slice(0, 80),
+      metadata: { slack_channel: event.channel, slack_thread: event.ts, slack_user: event.user },
+      agent: { instructions: "You are working for a team in Slack. If something is genuinely ambiguous, ask one short question with your question tool; otherwise decide and continue. Keep the final answer under 150 words." },
+      input: event.text.replace(/<@[A-Z0-9]+>\s*/g, ""),
+    }, { "idempotency-key": `slack-${payload.event_id}` });
+    // A retry replays the same session through the idempotency key; only the first attempt says so.
+    if (!retried) await say(event.channel, event.ts, "On it — I'll reply in this thread.");
+    return;
+  }
+
+  if (event.type === "message" && event.thread_ts) {
+    const session = await sessionForThread(event.thread_ts);
+    if (!session) return;
+    const question = session.required_actions.find((a: any) => a.type === "question");
+    const input = question
+      ? { type: "input.question_answer", call_id: question.call_id, answer: event.text }
+      : { type: "input.message", content: [{ type: "input_text", text: event.text }] };
+    await gobare("POST", `/v1/sessions/${session.id}/events`, { events: [input] }, { "idempotency-key": `slack-${payload.event_id}` });
+  }
+}
+
+// ── Gobare → Slack ──────────────────────────────────────────────────────────
+
+export async function onGobare(body: string, headers: IncomingMessage["headers"]): Promise<{ status: number }> {
+  const timestamp = String(headers["x-gobare-timestamp"] ?? "");
+  if (Math.abs(Date.now() - Number(timestamp)) > 5 * 60_000) return { status: 400 };
+  if (!hmacMatches(GOBARE_WEBHOOK_SECRET, `${timestamp}.${body}`, String(headers["x-gobare-signature"] ?? ""))) return { status: 401 };
+
+  const event = JSON.parse(body);
+  const session = await gobare("GET", `/v1/sessions/${event.data.session_id}`).catch(() => null);
+  const { slack_channel: channel, slack_thread: thread } = session?.metadata ?? {};
+  if (!channel || !thread) return { status: 200 };
+
+  if (event.type === "session.action_required") {
+    const question = session.required_actions.find((a: any) => a.type === "question");
+    if (question) {
+      const options = (question.arguments?.options ?? []).map((o: any) => `• ${o.label}`).join("\n");
+      await say(channel, thread, `*${question.name}*\n${options}\nReply in this thread.`);
+    }
+  }
+  if (event.type === "turn.completed") {
+    const items = await gobare("GET", `/v1/sessions/${session.id}/items?limit=20`);
+    const reply = items.data.find((i: any) => i.type === "message" && i.role === "assistant");
+    await say(channel, thread, reply?.content ?? "Done.");
+  }
+  if (event.type === "turn.failed") {
+    const turn = event.data.turn_id ? await gobare("GET", `/v1/sessions/${session.id}/turns/${event.data.turn_id}`) : null;
+    await say(channel, thread, `That did not work: ${turn.error?.message ?? "the turn failed"}`);
+  }
+  return { status: 200 };
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+  });
+}
+
+export function listen(port: number) {
+  return createServer(async (req, res) => {
+    const body = await readBody(req);
+    if (req.url === "/slack/events") {
+      // Slack wants an answer within 3 seconds and retries otherwise: answer first, work after.
+      const verdict = verifySlack(body, req.headers);
+      res.writeHead(verdict.status).end(verdict.body);
+      if (verdict.payload) await onSlack(verdict.payload, Boolean(req.headers["x-slack-retry-num"])).catch((err) => console.error(err));
+      return;
+    }
+    if (req.url === "/gobare/events") {
+      const result = await onGobare(body, req.headers).catch((err) => { console.error(err); return { status: 500 }; });
+      return res.writeHead(result.status).end();
+    }
+    res.writeHead(404).end();
+  }).listen(port);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) listen(Number(process.env.PORT ?? 3000));
+```
+
+## The parts that are about Slack
+
+**Three seconds.** Slack re-sends an event it did not get a `200` for within
+three seconds, marked with `x-slack-retry-num`. Creating a session and posting
+a message takes longer than that, so the route verifies the signature, answers,
+and only then does the work.
+
+**A retry must not start a second session.** `event_id` is stable across
+Slack's retries, so it is the `Idempotency-Key`: a retried mention replays the
+session the first attempt created. The replay is indistinguishable from the
+original, so the "On it" message is skipped on retries rather than posted
+twice.
+
+**The bot hears itself.** Its own messages arrive as `message` events too.
+`bot_id` and `subtype` filter them out; without that line the bot answers its
+own replies.
+
+**The signature covers the timestamp in seconds.** Slack signs
+`v0:{seconds}:{body}` with a `v0=` prefix. Gobare signs `{milliseconds}.{body}`
+with none. The two verifiers sit side by side in this file and are not
+interchangeable.
+
+## The parts that are about Gobare
+
+**A thread reply is either an answer or a follow-up.** If the session has a
+pending `question`, the reply is sent as `input.question_answer`; otherwise it
+is a new `input.message` in the same session, and the agent continues with
+everything it already did. Free text is fine as an answer — the options the
+agent offered are suggestions, not a menu.
+
+**The question is on the session, not the event.** `session.action_required`
+says only that something is pending. The handler reads the session for the
+question's text — `name` — and its `arguments.options`. See
+[required actions](/required-actions).
+
+**Nothing is deleted.** A thread can be picked up again tomorrow. An idle
+session pauses on its own, but it holds a concurrency slot until deleted — at
+more than a handful of threads a day, sweep old ones with
+`GET /v1/sessions?metadata=slack_channel:C…` and delete what nobody has touched.
+See [limits](/limits).
+
+## What was verified
+
+Run against production, with a local mock of the Slack Web API recording every
+`chat.postMessage`. Slack's events were signed with Slack's algorithm and sent
+over HTTP; Gobare's webhooks were signed with Gobare's own signing function and
+sent the same way, because the app was not reachable from the internet:
+
+- **Acknowledgement.** `url_verification` returned the challenge; every event
+  was answered in under 15 ms.
+- **A retried mention** with `x-slack-retry-num: 1` left exactly one session
+  for the thread, and "On it" was posted once.
+- **The whole thread.** The agent asked whether the release note was for
+  customers or internal staff, with both options listed; the thread reply
+  `customers` was delivered as the answer; the finished release note was
+  posted to the same thread. All three messages carried the original
+  `thread_ts`.
+- **A free-text answer** outside the offered options — "honestly neither, it's
+  for our investors" — completed normally, and the result was written for
+  investors.
+
+Not verified: a real Slack workspace, and Slack's rate limits on
+`chat.postMessage`.
+
+## Next
+
+- [required actions](/required-actions) — questions and approvals in full
+- [Require human approval before the agent acts](/guides/approvals-in-your-product) — the same loop for approvals
+- [webhooks](/webhooks) — signature and retries
