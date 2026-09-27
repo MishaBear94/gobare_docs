@@ -1,0 +1,101 @@
+---
+title: "The agent is pi"
+description: "You want to know which agent actually runs in a session, and what Gobare adds around it"
+---
+**Gobare does not have an agent of its own.** Every session runs
+[pi](https://github.com/earendil-works/pi) — the open-source coding agent by
+Mario Zechner, MIT-licensed — inside the session's sandbox, unmodified. Gobare is
+the computer around it and the API in front of it.
+
+So the agent you are calling is one you can read, run on your own laptop, and
+compare against.
+
+## Which pi
+
+| Package | Version in the sandbox | License |
+| --- | --- | --- |
+| [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) | 0.82.1 | MIT |
+| [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) | 0.82.1 | MIT |
+
+The version is pinned, so a new pi release never changes the agent underneath
+you; moving to one is a deliberate upgrade, not something that happens on its
+own.
+
+## What "unmodified" means
+
+pi is installed from npm exactly as published — no fork, no patches. Gobare
+drives it through pi's own SDK (`createAgentSession`, `SessionManager`) and
+changes its behaviour only through the extension points pi provides for that.
+
+That is checked, not asserted. Inside a production sandbox, the published
+tarball was downloaded fresh and compared file by file with what the agent
+runs:
+
+```bash
+npm pack @earendil-works/pi-ai@0.82.1 && tar xzf *.tgz
+diff -rq package /opt/gobare/node_modules/@earendil-works/pi-ai   # no differences
+```
+
+`pi-ai` was identical. `pi-coding-agent` was identical in every file the package
+ships; the only difference was the `node_modules` directory npm creates when it
+installs the package's own dependencies.
+
+You can run the same check yourself: [log into a session's
+machine](/guides/take-over-the-agents-machine) and run it there.
+
+## What pi does, and what Gobare adds
+
+| pi | Gobare |
+| --- | --- |
+| The agent loop: reading the task, calling the model, choosing tools, deciding it is done | The machine it runs on: a sandbox per session that pauses when idle and wakes on demand, a published address, SSH access |
+| Its native tools: `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` | More tools, registered through pi: running and watching long-lived services, `preview`, a task checklist, asking you a question, web search and a real browser, [your own functions and MCP servers](/tools) |
+| The model runtime, `pi-ai`, which speaks each provider's protocol | The connection to your model account, stored by your organization — see [model credentials](/model-credentials) |
+| The session file: one JSONL transcript per conversation | Your [instructions](/sessions#instructions) composed into pi's system prompt, and an [approval gate](/required-actions) on its tool calls, installed as a pi extension |
+| | The API: sessions, turns, [events](/events), [webhooks](/webhooks), artifacts |
+
+A session's conversation is a genuine pi session file. The first line of one,
+from a production sandbox:
+
+```json
+{"type":"session","version":3,"id":"01a0e1d5-291a-7610-ae45-1558db653e03","timestamp":"2026-09-27T07:47:18.426Z","cwd":"/workspace"}
+```
+
+## Why it matters
+
+- **It is not a black box.** When the agent does something surprising, the code
+  that decided it is public. Read it, or reproduce the behaviour with pi on
+  your own machine.
+- **Your prompts carry over.** The agent loop and native tools are the ones you
+  get running pi yourself. What Gobare adds sits on top, through pi's own
+  extension points, rather than replacing anything.
+- **What you learn about the agent is yours.** It stays true outside Gobare.
+
+## Bringing a pi session in, and back out
+
+If you already work with pi locally, the `gobare` CLI moves a **stopped** pi
+session into Gobare as a project, together with its workspace:
+
+```bash
+gobare pi import --session <pi-session-uuid> --name "Checkout flow debugging" --workspace .
+```
+
+For a project imported that way, `gobare pi export` downloads its latest
+checkpoint back out as a pi session file:
+
+```bash
+gobare pi export --project <project-id> --output ./restored-pi-session.jsonl
+```
+
+This is a migration, not a live sync: finish or cancel anything pi still has
+queued before you exit it, because pending follow-up messages live only in the
+running pi process and are not part of the session file. The CLI is a Node 22+
+package installed from
+[its GitHub releases](https://github.com/MishaBear94/gobare_tools); its README
+covers tokens, resuming an interrupted upload, and what is and is not carried
+across. These two commands were not exercised in writing this page.
+
+## Next
+
+- [How Gobare is different](/why-gobare)
+- [Take over the machine the agent is working on](/guides/take-over-the-agents-machine)
+- [tools](/tools) — everything you can add to what pi already has

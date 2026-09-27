@@ -14,6 +14,7 @@
         "group": "Start here",
         "pages": [
           "index",
+          "pi",
           "why-gobare",
           "without-code",
           "quickstart",
