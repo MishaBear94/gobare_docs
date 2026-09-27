@@ -1,0 +1,192 @@
+---
+title: "Claude Managed Agents is the best harness for Claude. Here's when you need something else."
+description: "If you build only on Claude, use Claude Managed Agents. Four conditions where you need an alternative, quoted from Anthropic's docs, and where Gobare loses."
+date: "2026-09-27"
+---
+
+*Disclosure up front: I work on Gobare, a managed agent runtime API. I've tried to make that irrelevant by quoting Anthropic's documentation verbatim, acknowledging where Claude Managed Agents excels, and explicitly detailing where our own runtime loses.*
+
+---
+
+If your team builds AI agents exclusively on Claude, use **Claude Managed Agents**.
+
+Anthropic has built what is arguably the most complete hosted agent harness available today. It decouples the reasoning engine from execution infrastructure, giving you managed sandboxes, built-in toolsets, and multi-agent coordination without writing boilerplate loops.
+
+You only need an alternative if your system hits one of four specific engineering boundary conditions:
+
+1. Your agent must run on a model Anthropic doesn't serve (e.g., DeepSeek, Qwen, Gemini, or a customer's required provider).
+2. You need to inspect or modify the agent harness code.
+3. You cannot afford to lose lifecycle events to a webhook that gives up after three attempts.
+4. An engineer needs direct shell access to a managed sandbox to debug its state.
+
+Here is a breakdown of what Claude Managed Agents gets right, where its boundaries sit, and how to evaluate alternative architectures.
+
+---
+
+## What Claude Managed Agents gets right
+
+Before evaluating alternatives, it is worth acknowledging what Anthropic got right. Claude Managed Agents is a *"pre-built, configurable agent harness that runs in managed infrastructure."*
+
+If you fit its target profile, it handles several complex infra problems out of the box:
+
+* **Versioned agent configurations**: An agent is *"a reusable, versioned configuration"*, so you can pin specific agent versions across deployments.
+* **Flexible sandboxing**: Sessions run in *"an Anthropic-managed cloud sandbox, or a self-hosted sandbox on your own infrastructure."*
+* **Cron deployments**: *"Recurring agent runs on a cron schedule through scheduled deployments."*
+* **Session budgets**: Sessions can carry hard spend caps. When a session reaches its cap, it *"pauses and goes idle with the stop reason `budget_reached`."*
+* **Automatic checkpointing**: *"When a session goes idle, its sandbox is checkpointed, preserving the full sandbox state, including the filesystem, installed packages, and any files the agent created."* Checkpoints *"are only preserved for 30 days after the session's last activity."*
+
+For teams standardizing entirely on Anthropic's model family, this is an exceptionally clean contract.
+
+---
+
+## Four reasons teams look elsewhere
+
+### 1. The model is not Claude
+
+Claude Managed Agents is single-vendor. Per Anthropic's setup guide, the `model` field is:
+
+> *"Required. The Claude model that powers the agent."*
+
+*"Claude 4.5 and later models are supported."* If your product requires model routing (using DeepSeek or Qwen for cheaper bulk turns, routing to OpenAI or Gemini based on user preference, or serving regions where Anthropic endpoints are unavailable), Claude Managed Agents can't run it.
+
+### 2. You need to read or modify the agent harness
+
+Claude Managed Agents is a hosted harness behind the `managed-agents-2026-04-01` beta header. You specify the system prompt, tools, MCP servers and skills, but the inner loop (how tool calls are dispatched, how errors are recovered, how context is compacted) runs on Anthropic's side.
+
+If an agent loop behaves unexpectedly, you cannot step through the harness code or patch its execution logic locally.
+
+### 3. You cannot afford dropped webhooks
+
+For event-driven SaaS architectures, webhook durability is critical. Anthropic's webhook documentation states:
+
+> *"Anthropic makes up to three delivery attempts ... with jittered exponential backoff between 5 and 120 seconds ... After the last attempt fails, the event is dropped: it isn't queued for later delivery and there's no signal that it was lost. Webhooks aren't a durable log"*
+
+Anthropic also notes that *"ordering is not guaranteed"*, and that *"if you need to observe every transition, reconcile by listing or fetching the resource through the API."* If your application relies on webhooks to trigger downstream billing, database updates, or user notifications, three attempts within a few minutes before a silent drop means building a secondary polling reconciler.
+
+### 4. An engineer needs to shell into the running machine
+
+When an agent gets stuck during a long-running task, event streams are often not enough. Debugging complex environment issues (broken native dependencies, a stuck background process) means getting into the workspace itself.
+
+Anthropic's docs describe event streams, tool execution details and a Console tracing view. I didn't find an interactive shell into an Anthropic-managed cloud sandbox. With a self-hosted sandbox the machine is yours, so you can get in, but then you run the compute.
+
+---
+
+## Architectural landscape: how alternatives compare
+
+When stepping outside Claude Managed Agents, runtime architectures fall into three primary patterns:
+
+```
+                  ┌──────────────────────────────────────────────────────────┐
+                  │                 Who runs the agent loop?                 │
+                  └────────────────────────────┬─────────────────────────────┘
+                                               │
+                       ┌───────────────────────┴───────────────────────┐
+                       ▼                                               ▼
+               [ Client / Your Process ]                      [ Managed Runtime API ]
+                       │                                               │
+          ┌────────────┴────────────┐                     ┌────────────┴────────────┐
+          ▼                         ▼                     ▼                         ▼
+   OpenAI Agents SDK       Claude Agent SDK        OpenAI Agents API             Gobare
+   + Sandbox Provider      + Sandbox Provider     (OpenAI models only)     (Any model / BYOK)
+```
+
+| Dimension | Claude Managed Agents | OpenAI Agents API | SDK + sandbox (e.g., E2B / Daytona) | Gobare |
+| --- | --- | --- | --- | --- |
+| **Agent loop** | Managed (Anthropic) | Managed (OpenAI) | Your process | Managed (open-source `pi`) |
+| **Model choice** | Claude 4.5+ only | OpenAI models | Any via adapters (OpenAI Agents SDK); Claude (Claude Agent SDK) | Nine providers plus any OpenAI- or Anthropic-compatible endpoint, your own key |
+| **Sandbox** | Anthropic-hosted or self-hosted | OpenAI-hosted, self-hosted or a partner | Third-party provider | Managed E2B microVMs |
+| **Interactive shell** | Not documented for cloud sandboxes; yours on self-hosted | Not compared here | Depends on provider | Yes (`ssh -p 2222 s-$SESSION@ssh.gobare.dev`) |
+| **Webhook durability** | Up to 3 attempts, then dropped | Not compared here | Your implementation | 6 attempts over ~9 hours, dead-letter tracking |
+
+---
+
+## Concept map: migrating from Claude Managed Agents to Gobare
+
+If you are migrating a workload from Claude Managed Agents to Gobare, the concepts map almost 1:1:
+
+| Claude Managed Agents | Gobare API | Note |
+| --- | --- | --- |
+| `agent` | Saved agent (`POST /v1/agents`), referenced as `agent.id` | Model, instructions and tools |
+| `environment` | `environment` on the session (`repo`, `files`, `profiles`) | What the workspace starts with; secrets through environment profiles |
+| `session` | `session` | The isolated workspace and its conversation |
+| `user.message` | `input.message` | User turn input |
+| `user.custom_tool_result` | `input.tool_result` | Result of a function your code ran |
+| `user.tool_confirmation` | `input.approval` | Human-in-the-loop approval (`approved: true` / `false`) |
+| `user.interrupt` | `input.cancel` / `input.steer` | Stop or redirect an in-flight turn |
+| Webhook delivery | Webhook delivery | Gobare retries 6 times over ~9 hours and reports delivery health |
+
+### Side-by-side: creating a session
+
+**Claude Managed Agents** (agent and environment created beforehand):
+
+```bash
+curl https://api.anthropic.com/v1/sessions \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: managed-agents-2026-04-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "agent": "'"$AGENT_ID"'",
+    "environment_id": "'"$ENVIRONMENT_ID"'",
+    "initial_events": [{"type": "user.message",
+      "content": [{"type": "text", "text": "Fix the failing tests in this repository"}]}]
+  }'
+```
+
+**Gobare** (the model key is connected once per organization and never travels in a session request):
+
+```bash
+# Once: connect the model key. It is verified on save and never enters a sandbox.
+curl https://api.gobare.dev/v1/model-credentials \
+  -H "Authorization: Bearer $GOBARE_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"provider": "deepseek", "key": "'"$DEEPSEEK_API_KEY"'"}'
+
+# Once: subscribe a webhook endpoint. The signing secret is returned only here.
+curl https://api.gobare.dev/v1/webhooks \
+  -H "Authorization: Bearer $GOBARE_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"url": "https://your-saas.com/api/webhooks/gobare",
+       "events": ["turn.completed", "turn.failed", "session.action_required"]}'
+
+# Per task
+curl https://api.gobare.dev/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{
+    "agent": {"model": "deepseek-v4-flash"},
+    "environment": {"repo": "acme/site"},
+    "input": "Fix the failing tests in this repository"
+  }'
+```
+
+---
+
+## Where Gobare loses to Claude Managed Agents
+
+To make an informed architectural decision, you should know where Gobare falls short:
+
+* **No self-hosted sandboxes or scheduled runs**: Gobare only runs on its own managed machines. We do not support running the sandbox layer inside your VPC, and there is no built-in cron scheduling.
+* **Unversioned saved agents**: Unlike Anthropic's versioned agent objects, saved agents in Gobare are not versioned.
+* **No per-session spend budgets**: There is no hard spend cap per session at the runtime level.
+* **Weaker workspace persistence**: Anthropic checkpoints the full filesystem and installed packages. Gobare's workspace snapshot is best-effort: it excludes `.git` and `node_modules`, is skipped entirely if the workspace exceeds 300 MB, and running processes are not preserved.
+* **Hard two-hour sandbox ceiling**: A Gobare sandbox is reclaimed two hours of wall-clock time after it was created, whether it is working, idle or paused; a turn still running at that point is interrupted. A snapshot is taken first, and the next input builds a fresh sandbox from it with a new two-hour window. Sessions with a published address or an open SSH connection are exempt.
+* **Lower rate limits**: Gobare allows 10 session creations per minute per token. Anthropic's create endpoints allow 300 requests per minute per organization.
+* **Alpha stage and smaller footprint**: Gobare is an early-stage runtime. Anthropic is an enterprise infrastructure provider.
+
+---
+
+## The decision rule
+
+When selecting a managed agent runtime, apply this decision matrix:
+
+1. **Are you building strictly with Claude models and need enterprise features like self-hosted sandboxes, cron scheduling, and session budgets?** → Use **Claude Managed Agents**.
+2. **Do you need full ownership of the execution loop, custom agent frameworks (LangGraph, AutoGen), and in-house orchestration?** → Use an **SDK (OpenAI Agents SDK / Claude Agent SDK)** with a sandbox provider (E2B, Daytona, Modal).
+3. **Do you want a managed runtime API, but need model choice with your own key, an open-source inspectable harness (`pi`), durable webhooks, or direct SSH access?** → That is precisely why we built **Gobare**.
+
+---
+
+**Sources (all checked 27 September 2026):**
+
+* **Claude Managed Agents**: [Overview](https://platform.claude.com/docs/en/managed-agents/overview) · [Agent setup](https://platform.claude.com/docs/en/managed-agents/agent-setup) · [Sessions](https://platform.claude.com/docs/en/managed-agents/sessions) · [Session event stream](https://platform.claude.com/docs/en/managed-agents/events-and-streaming) · [Webhooks](https://platform.claude.com/docs/en/managed-agents/webhooks) · [Reference](https://platform.claude.com/docs/en/managed-agents/reference)
+* **Gobare**: [Why Gobare](https://docs.gobare.dev/why-gobare) · [Design decisions](https://docs.gobare.dev/design-decisions) · [Limits](https://docs.gobare.dev/limits) · [Webhooks](https://docs.gobare.dev/webhooks) · [Model credentials](https://docs.gobare.dev/model-credentials)
