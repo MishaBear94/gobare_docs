@@ -1,0 +1,149 @@
+---
+title: "Run a coding agent from your backend API: one POST, one signed webhook"
+description: "Start a coding agent on its own cloud machine with one request, get told by a signed webhook when it's done, collect the answer and files. Three snippets and a full runnable example."
+date: "2026-09-27"
+category: "Guides"
+tags: "Webhooks, API, Quickstart"
+cover: "images/run-coding-agent-from-backend-api-cover.jpg"
+coverText: "Run a coding agent|from your backend"
+author: "Gobare team"
+---
+
+You want a feature where a user asks for something and a coding agent goes and does it: clones a repo, runs the tests, writes a report. The work takes minutes. You don't want a request thread waiting that long, and you don't want to poll.
+
+The shape that works is one POST out and one webhook back. Your API returns `202` straight away, the agent works on its own machine, and a signed webhook tells your backend when there is something to collect. This post is the [Gobare quickstart](https://docs.gobare.dev/quickstart) rebuilt that way. The three snippets below are condensed from one runnable file, linked at the end.
+
+```
+client ── POST /jobs ──▶ your API ── POST /v1/sessions ──▶ Gobare: agent on its own machine
+       ◀── 202 job_id ──          (holds nothing open)
+                          your API ◀── signed webhook ──── turn.completed
+                          GET turn, reply, files; DELETE session
+client ── GET /jobs/:id ▶ answer and files
+```
+
+## Once per organization
+
+Connect a model key (it is verified on save and never enters a sandbox), then subscribe your webhook endpoint:
+
+```bash
+curl -s -X POST https://api.gobare.dev/v1/model-credentials \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"key":"sk-ant-api03-…"}'
+
+curl -s -X POST https://api.gobare.dev/v1/webhooks \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"url":"https://your-backend.example/hooks/gobare",
+       "events":["turn.completed","turn.failed","session.action_required"]}'
+```
+
+The webhook response carries a `secret`. It is shown once; store it. For keys that start with a bare `sk-`, add `"provider"` (for example `"deepseek"`) so the key is only sent to the vendor you named.
+
+## 1. Start the job and return
+
+```ts
+app.post("/jobs", express.json(), async (req, res) => {
+  const jobId = randomUUID();
+  const { task, repo } = req.body;
+
+  let session;
+  try {
+    session = await gobare("POST", "/sessions", {
+      agent: { model: MODEL },
+      ...(repo ? { environment: { repo } } : {}),   // "owner/name"
+      metadata: { job_id: jobId },                  // comes back on every read of the session
+      input: `${task}\n\nWrite anything you produce as files under /workspace/outputs.`,
+    }, { "idempotency-key": `job-${jobId}` });      // a retried dispatch can't start a second agent
+  } catch (err) {
+    return res.status(502).json({ error: "could not start the agent" });
+  }
+
+  jobs.set(jobId, { sessionId: session.id, status: "running" });
+  res.status(202).json({ job_id: jobId, status: "running" });
+});
+```
+
+`gobare()` is a ten-line `fetch` wrapper that adds the bearer token. The session is created immediately and its machine comes up behind it, so you never wait for it before sending work.
+
+## 2. Receive the webhook
+
+```ts
+function verify(timestamp: string, body: string, signature: string) {
+  const expected = createHmac("sha256", SECRET).update(`${timestamp}.${body}`).digest("hex");
+  if (expected.length !== signature.length) return false;
+  if (!timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"))) return false;
+  return Math.abs(Date.now() - Number(timestamp)) <= 5 * 60_000;  // milliseconds
+}
+
+// express.raw, not express.json: the signature is over the exact bytes sent.
+app.post("/hooks/gobare", express.raw({ type: "application/json" }), (req, res) => {
+  const body = req.body.toString("utf8");
+  if (!verify(req.header("x-gobare-timestamp") ?? "", body, req.header("x-gobare-signature") ?? ""))
+    return res.sendStatus(400);
+  res.sendStatus(200);                     // answer within 10 s, then do the work
+  handle(JSON.parse(body)).catch(console.error);
+});
+```
+
+The payload is small on purpose. It names the session and, for turn events, the turn: `{"type":"turn.completed","data":{"session_id":"…","turn_id":"…"}}`. Deliveries are at least once and can arrive out of order, so `handle` skips a `type:turn_id` pair it has already seen, then reads the session for current state and routes on the event type.
+
+## 3. Collect the result and free the machine
+
+```ts
+async function collect(jobId: string, sessionId: string, turnId: string) {
+  const turn = await gobare("GET", `/sessions/${sessionId}/turns/${turnId}`);
+  if (turn.artifacts === "pending") return setTimeout(() => collect(jobId, sessionId, turnId), 5_000);
+
+  const { data: items } = await gobare("GET", `/sessions/${sessionId}/items?limit=20`);
+  const reply = items.find((i: any) => i.type === "message" && i.role === "assistant");
+
+  const { data: artifacts } = await gobare("GET", `/sessions/${sessionId}/artifacts?turn_id=${turnId}`);
+  await mkdir(`out/${jobId}`, { recursive: true });
+  for (const a of artifacts) {
+    const file = await fetch(`${API}/sessions/${sessionId}/artifacts/${a.id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } });
+    await writeFile(`out/${jobId}/${a.path.split("/").pop()}`, Buffer.from(await file.arrayBuffer()));
+  }
+
+  jobs.set(jobId, { sessionId, status: "completed", answer: reply?.content ?? "", files: artifacts.map((a: any) => a.path) });
+  await gobare("DELETE", `/sessions/${sessionId}`);   // a session holds a concurrency slot until deleted
+}
+```
+
+Two answers come back, and you usually want both. The prose is the newest assistant message in `items`. The files are artifacts: anything the agent wrote under `/workspace/outputs`, which outlives the session. `turn.failed` goes the same way: read `turn.error`, record it, delete the session.
+
+## When the agent needs your code
+
+Declare a function in `agent.tools` when you create the session, and the agent can call it. The session then stops with `session.action_required`, your handler runs the function and answers with an `input.tool_result` carrying the `turn_id` and `call_id` from the request. Send a fixed error string when your function fails, never a stack trace, because it goes to the model. Approvals and questions are for a person: answer them later with `input.approval` or `input.question_answer`, or in the Console. The full file does all of this.
+
+## The full example
+
+**[server.ts, package.json and a README →](https://github.com/MishaBear94/gobare_docs/tree/main/blog/examples/backend-webhook)** About 190 lines: dispatch, verification, dedupe, collection, function calls and failure handling.
+
+```bash
+npm install
+export GOBARE_TOKEN=gbr_pat_... GOBARE_WEBHOOK_SECRET=whsec_... GOBARE_MODEL=MiniMax-M3
+npm start
+cloudflared tunnel --url http://localhost:3000   # a public HTTPS address for the webhook
+```
+
+## Seven things that fail quietly
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Every delivery fails verification | You verified parsed-then-reserialised JSON | Verify the raw body |
+| Still failing, and the secret is right | You divided the timestamp by 1000 | `x-gobare-timestamp` is milliseconds |
+| A job finishes twice | Deliveries are at least once | Dedupe on `type` + `turn_id` |
+| A completed turn has no files | Publishing hadn't finished | Wait until `turn.artifacts` isn't `pending` |
+| Your function is never called | It was handled but not declared | Declare it in `agent.tools` at creation |
+| New sessions refused with `project_limit_exceeded` | Old sessions were never deleted | Delete on completion; 25 concurrent per organization by default |
+| A long job stops near two hours | A sandbox is reclaimed two hours after it was created, paused time included | Split long work into turns; the next input starts a fresh sandbox from a snapshot |
+
+The first turn on a cold machine can take minutes rather than seconds. That is the reason for the webhook, not a failure.
+
+## Before production
+
+- **Split the token.** The dispatcher needs `sessions:write`. The webhook worker needs `sessions:read`, `tools:respond` and `artifacts:read`. A token with only `tools:respond` can answer function calls but can't message, cancel or delete a session.
+- **Persist the dedupe keys and jobs** in your database, with a unique constraint on the key.
+- **Pace session creation.** `POST /v1/sessions` allows 10 per minute per token. Every response carries `x-ratelimit-remaining`.
+
+More in the docs: [quickstart](https://docs.gobare.dev/quickstart) · [webhooks](https://docs.gobare.dev/webhooks) · [required actions](https://docs.gobare.dev/required-actions) · [limits](https://docs.gobare.dev/limits) · [OpenAPI spec](https://api.gobare.dev/v1/openapi.json).
