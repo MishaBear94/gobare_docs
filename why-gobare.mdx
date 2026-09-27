@@ -1,0 +1,73 @@
+---
+title: "How Gobare is different"
+description: "You have seen agent APIs before and want to know what this one gives you that they do not"
+---
+**The request shapes will look familiar.** Agents, sessions, turns, events, tool
+calls, a pause for approval — if you have used another agent API, most of this
+one reads the way you expect. That is on purpose: switching should cost an
+afternoon, not a rewrite. [Design decisions](/design-decisions) lists the places
+where it deliberately behaves differently.
+
+What is different is what a session *is*. It is a real computer, and three
+things are true of it at once.
+
+## A machine you can log into
+
+The agent works on a Linux machine, and so can you. Open a shell on the same
+computer from your own terminal, read what it changed — including what it did
+not commit — fix it, and hand it back. The agent carries on from your change.
+
+```bash
+ssh -p 2222 s-$SESSION@ssh.gobare.dev
+```
+
+"The agent says it is done" stops being a claim you have to trust.
+→ [Take over the machine the agent is working on](/guides/take-over-the-agents-machine)
+
+## An address that outlives the machine going idle
+
+Publish what the agent built and you get a Gobare address to hand out. When
+nobody uses it, the machine behind it pauses; the next visitor wakes it. In the
+run behind the guide below, a paused app answered an anonymous visitor in
+1.76 seconds. Nothing on your side keeps it alive.
+→ [Publish an app and let a visitor wake it](/guides/wake-a-published-app)
+
+## Your choice of model
+
+Connect a key from Anthropic, OpenAI, xAI, OpenRouter, MiniMax, DeepSeek, Qwen,
+Kimi or GLM — or any OpenAI- or Anthropic-compatible endpoint — and the same
+sessions, events and tools run on it. Model spend stays on your own account;
+Gobare does not resell tokens.
+→ [model credentials](/model-credentials) · [Swap model providers without changing your code](/guides/switching-model-providers)
+
+## What is new is the combination
+
+Each of these exists somewhere on its own. Some sandbox platforms let you SSH
+into a machine; some keep a paused machine for later; model aggregators let you
+choose a vendor. What a Gobare session gives you is all three on the same
+computer an agent is already working on — so the agent, you, and the people you
+built it for are all looking at one thing.
+
+## What it does not do yet
+
+Written down so you find out here rather than halfway through a build:
+
+- **SSH keys are registered in the Console**, under Settings › SSH keys — not
+  through `/v1`. The gateway gives you an interactive shell only: no
+  `ssh host 'command'`, no `scp`/`sftp`, no port forwarding.
+- **A published address passes no cookies** in either direction and does not
+  upgrade to WebSocket, so an app that signs visitors in does not work behind it
+  yet.
+- **No roles or fine-grained permissions** for the people in an organization.
+- **No self-hosted sandboxes and no scheduled runs.** Sessions run on Gobare's
+  machines, when you ask.
+- **A weak model makes a weak agent.** Choosing the model is yours, and so is
+  that consequence.
+- **An idle, unpublished workspace is reclaimed after two hours**, with a
+  snapshot taken first; a workspace over 300 MB is not snapshotted, and
+  `node_modules` and `.git` are not part of the snapshot. See [limits](/limits).
+
+## Next
+
+- [quickstart](/quickstart) — from a token to a finished turn
+- [Build without writing code](/without-code) — the same agent, in the Console, for people who would rather describe than call

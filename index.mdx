@@ -5,17 +5,18 @@ title: "Gobare Agent API"
 you — an agent with a computer, that writes files, runs them, and leaves what it
 built at a URL you can open.
 
-```mermaid
-flowchart TD
-  app["Your application"] -- "one API call" --> gobare["Gobare"]
-  gobare --> agent["coding agent"]
-  agent --> computer["a cloud computer"]
-  computer --> parts["a real workspace<br/>a shell it installs and runs in<br/>your tools: functions, MCP<br/>a public URL for what it built"]
-```
+If you have used another agent API, the request shapes will look familiar; that
+is deliberate. What is different is what a session is — a real computer — and
+three things that are true of it at once:
 
-**You bring the model key.** Gobare does not sell you inference — it runs an
-agent against a connection your organization owns, on a sandbox Gobare provides.
-You pay your model provider for tokens and Gobare for the computer.
+| | |
+| --- | --- |
+| **You can log into it.** | Open a shell on the machine the agent is working on, check what it did, fix it, and hand it back → [Take over the machine](/guides/take-over-the-agents-machine) |
+| **What it builds stays reachable.** | A published app pauses when nobody is using it and wakes for the next visitor → [Publish and wake](/guides/wake-a-published-app) |
+| **The model is yours to choose.** | Nine providers or any compatible endpoint, on your own account. You pay your provider for tokens and Gobare for the computer → [model credentials](/model-credentials) |
+
+More in [How Gobare is different](/why-gobare), including what it does not do
+yet. Don't write code? [Build in the Console instead](/without-code).
 
 ## A minute, start to finish
 
@@ -349,6 +350,8 @@ API and is what the Console uses.
 
 | Page | Read it when |
 | --- | --- |
+| [why-gobare.md](/why-gobare) | You have seen agent APIs before and want to know what this one gives you that they do not |
+| [without-code.md](/without-code) | You want something built for you, not an API |
 | [quickstart.md](/quickstart) | First time. Token to completed turn, in one page |
 | [production-integration.md](/production-integration) | It works, and now it has to keep working |
 | [typescript.md](/typescript) | You are past `curl` and putting this in a service |
@@ -371,10 +374,10 @@ API and is what the Console uses.
 | [changelog.md](/changelog) | You want to know what changed, and when |
 | [design-decisions.md](/design-decisions) | You want to know why the API behaves as it does |
 
-Those pages describe the parts. [Guides](/guides) put them together:
-six scenarios — long-running work, structured extraction, approvals, dispatch
-from your own service, showing the agent's work live, and moving between model
-providers — each written as a sequence you can copy.
+Those pages describe the parts. [Guides](/guides) put them together as
+scenarios you can copy, and [Integrations](/integrations/overview) connect a
+session to systems you already run — Temporal, agent frameworks, GitHub Actions,
+Slack, Cloudflare Workers and billing.
 
 The machine-readable reference is `GET /v1/openapi.json` — OpenAPI 3.1, **no
 token needed**, because it describes the API rather than holding data in it.

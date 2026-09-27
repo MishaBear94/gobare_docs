@@ -1,0 +1,92 @@
+---
+title: "Publish an app and let a visitor wake it"
+description: "A published address outlives the machine going idle: nobody keeps it running, and the next visitor brings it back"
+---
+**The shape:** the agent builds something and serves it. You publish it, and
+get an address to hand out. When nobody is using it the machine behind it
+pauses, and costs nothing while it waits. The next person to open the address
+wakes it — no keep-alive, no cron job pinging it, nothing on your side at all.
+
+## 1. Build something that serves a port
+
+```bash
+SESSION=$(curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"input":"In /workspace/app create server.js: a Node http server on port 3000 that responds with the text \"orders: 42\" followed by a newline and then \"process started at <ISO time the process started>\". Start it in the background, check it responds with curl, then call preview(3000). Reply with one sentence."}' \
+  | jq -r .id)
+```
+
+Wait for the turn to complete — see the [quickstart](/quickstart) — and the
+session's `preview.port` reads `3000`.
+
+## 2. Publish it
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions/$SESSION/preview \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' -d '{}'
+```
+
+```json
+{"object":"preview","subdomain":"s-c80b3bad970247178bff",
+ "url":"https://s-c80b3bad970247178bff.gobare.dev",
+ "published_url":"https://s-c80b3bad970247178bff.gobare.dev","port":3000}
+```
+
+`published_url` is the address to hand out. It is a Gobare address, so it stays
+the same whatever happens to the machine behind it. See [preview](/preview).
+
+## 3. Leave it alone, then open it
+
+Measured on production, on one session:
+
+| Time (UTC) | What happened |
+| --- | --- |
+| 04:24:43 | The server process starts |
+| 04:25:23 | First visit: `200` in 2.2 s |
+| ~04:30 | Nobody has visited for five minutes; `environment.state` reads `paused` |
+| 04:31:20 | A visit, from a client that had never authenticated: `200` in **1.76 s**. `process started at 04:24:43` — the same process, carried through the pause |
+| 04:32 | Paused again, then woken by an [SSH login](/guides/take-over-the-agents-machine) instead: the files were all there, and the server answered — but `process started at 04:32:41`. A new process this time |
+
+The last two rows are the lesson. **What is on disk comes back. What is only in
+memory may or may not.** Write anything your app must not lose to a file or a
+database in the workspace, and let a restart be boring.
+
+The first visitor after a pause waits a moment — a second or two in this run —
+while the machine wakes. Everyone after them does not.
+
+## How long it lasts
+
+A published app **pauses but is never reclaimed**. An unpublished workspace is
+reclaimed after two hours of idleness, with a snapshot taken first; a workspace
+over 300 MB is not snapshotted, and `node_modules` and `.git` are not part of
+that snapshot. See [limits](/limits).
+
+Unpublish when you are done:
+
+```bash
+curl -s -X DELETE $GOBARE_API/v1/sessions/$SESSION/preview -H "Authorization: Bearer $GOBARE_TOKEN"
+```
+
+## What a published address does not do yet
+
+- **No cookies**, in either direction. An app that signs people in with a
+  cookie session will not keep them signed in behind a published address.
+- **No WebSocket upgrades**, and responses are delivered whole rather than
+  streamed.
+
+So today a published address suits pages, dashboards and tools that do not need
+a signed-in visitor. It is not yet a place to run a system your staff log into.
+
+## What was verified
+
+The table above is one run against production on 2026-09-27: the build, the
+publish call and its reply, the pause observed through `GET /v1/sessions/{id}`,
+the unauthenticated wake and its timing, and the SSH wake with a restarted
+process. One run is a sample, not a promise — the timings are what happened, not
+a service level. Reclamation after two hours was not exercised in this run.
+
+## Next
+
+- [Take over the machine the agent is working on](/guides/take-over-the-agents-machine)
+- [How Gobare is different](/why-gobare)
+- [preview](/preview) — the two addresses, and who can open each

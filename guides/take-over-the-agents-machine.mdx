@@ -1,0 +1,120 @@
+---
+title: "Take over the machine the agent is working on"
+description: "Open a shell on the same computer the agent is using, see exactly what it did — including what it did not commit — change it, and hand it back"
+---
+**The shape:** a session is a real Linux machine, not a transcript. While the
+agent works on it, you can log into the same machine from your own terminal,
+read the files it changed, fix what it got wrong, and give it back. The agent
+carries on from your change, because there is only one machine.
+
+This is the answer to "the agent says it's done — is it?". Don't read its
+summary. Log in and look.
+
+## Once: register a key
+
+Add an `ed25519` public key in the Console under **Settings › SSH keys**. Keys
+are per user, and only `ed25519` is accepted.
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/gobare
+cat ~/.ssh/gobare.pub
+```
+
+Paste the `.pub` line into the Console. Registering a key is a Console step;
+there is no `/v1` endpoint for it yet.
+
+## 1. Give the agent something to leave half-done
+
+```bash
+SESSION=$(curl -s -X POST $GOBARE_API/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"input":"In /workspace, create a git repository with a file greet.js that exports a function greet(name) returning \"Hello, \" + name. Commit it. Then change it so it returns \"Hi, \" + name instead, but do NOT commit that change. Reply with one sentence."}' \
+  | jq -r .id)
+```
+
+Wait for the turn as usual — see the [quickstart](/quickstart).
+
+## 2. Log in
+
+The login name is the session id with `s-` in front:
+
+```bash
+ssh -i ~/.ssh/gobare -p 2222 s-$SESSION@ssh.gobare.dev
+```
+
+```
+Preparing Gobare workspace...
+gobare:/workspace$
+```
+
+You arrive as `user`, with passwordless `sudo`. The agent works as `root`, so
+the files it made are root's: `git` refuses to touch its repository ("detected
+dubious ownership"), and a plain edit fails with `Permission denied`. Become
+the same user the agent is before you do anything:
+
+```bash
+sudo -i
+```
+
+## 3. Look, then change something
+
+In the run behind this guide, the agent had put the repository at
+`/workspace/greet-repo` rather than in `/workspace` itself — the kind of detail
+its summary does not always mention and the filesystem always does.
+
+```bash
+cd /workspace/greet-repo
+git log --oneline      # df764a8 Initial commit: greet returns Hello
+git diff               # the uncommitted change to "Hi, "
+sed -i 's/Hi, /Hey, /' greet.js
+git -c user.name=human -c user.email=human@example.com commit -qam "human: greet with Hey"
+```
+
+## 4. Hand it back
+
+```bash
+curl -s -X POST $GOBARE_API/v1/sessions/$SESSION/events \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"events":[{"type":"input.message","content":[{"type":"input_text","text":"Someone else just worked in /workspace/greet-repo. Show me the last two commits with their authors, and what greet(\"Ada\") returns now. Then add a test file test.js that asserts that value, and commit it."}]}]}'
+```
+
+The agent's reply, from that run:
+
+> Last two commits:
+> - `18f3838` — human: "human: greet with Hey"
+> - `df764a8` — Agent: "Initial commit: greet returns Hello"
+>
+> `greet("Ada")` currently returns `"Hey, Ada"` … I added `test.js` asserting
+> `greet('Ada') === 'Hey, Ada'`, it passes, and I committed it.
+
+It saw your commit, read your change, and built on it. Nothing was copied
+anywhere.
+
+## What the gateway gives you
+
+| | |
+| --- | --- |
+| An interactive shell | Yes |
+| `ssh host 'command'` | No — the gateway refuses `exec` requests. To script it, pipe commands into an interactive session: `printf 'cd /workspace && git status\nexit\n' \| ssh -tt …` |
+| Copying files with `scp` or `sftp` | No |
+| Port forwarding | No |
+| Logging into a paused session | Yes — it wakes the workspace first. In this run the shell was ready about 9 seconds after connecting |
+
+For files, use the workspace itself: ask the agent to write them under
+`/workspace/outputs`, or read them with `GET /v1/sessions/{id}/files/content`.
+See [sessions](/sessions).
+
+## What was verified
+
+Run against production on 2026-09-27 with a key registered for the acceptance
+account and a stock OpenSSH client: the login string above, the `user` identity
+with passwordless `sudo`, the root-owned repository and the two refusals before
+`sudo -i`, the edit and commit, the agent's reply reading the human commit, the
+refused `exec` request, and a paused session woken by logging in. The session
+was deleted and the key revoked afterwards.
+
+## Next
+
+- [How Gobare is different](/why-gobare) — why a machine you can enter matters
+- [Publish an app and let a visitor wake it](/guides/wake-a-published-app)
+- [required actions](/required-actions) — stopping the agent for approval, instead of fixing afterwards
