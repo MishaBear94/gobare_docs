@@ -108,6 +108,10 @@
   "navbar": {
     "links": [
       {
+        "label": "Gobare",
+        "href": "https://gobare.dev"
+      },
+      {
         "label": "GitHub",
         "href": "https://github.com/MishaBear94/gobare_tools"
       }
@@ -120,7 +124,10 @@
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/MishaBear94/gobare_tools"
+      "website": "https://gobare.dev",
+      "github": "https://github.com/MishaBear94/gobare_tools",
+      "x": "https://x.com/markovvxow",
+      "discord": "https://discord.gg/fTkEJQNmjg"
     }
   },
   "logo": {
