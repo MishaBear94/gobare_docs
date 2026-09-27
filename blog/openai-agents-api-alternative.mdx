@@ -1,0 +1,188 @@
+---
+title: "OpenAI Agents API alternative: the same request, on any model"
+description: "OpenAI's hosted Agents API runs OpenAI models on OpenAI's terms. If you need Claude, Kimi or your own key behind the same kind of session, here is what to use, and when to stay put."
+date: "2026-09-27"
+---
+
+OpenAI's [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview)
+went into public beta on 10 September. It is a good product: a hosted Codex
+harness, a sandbox per session, artifacts that outlive the machine. If you are
+building on OpenAI models and nothing below bothers you, use it.
+
+This page is for the other case. You want that shape — send a task over HTTP, an
+agent works on a real machine until it's done, you read the results — but you
+need a different model, your own key, or different terms than the beta offers.
+
+Disclosure: we build [Gobare](https://gobare.dev), one of the alternatives
+below. Every claim about OpenAI is quoted from its public documentation, checked
+on 27 September 2026, and there is a section on where we lose.
+
+## First: the Agents API is not the Agents SDK
+
+The names are close and the products are opposite answers to one question: who
+runs the agent loop?
+
+- **The Agents SDK** is open source and runs in your process. You own the loop.
+  It can use other providers through LiteLLM and Any-LLM adapters.
+- **The Agents API** is hosted. In OpenAI's words, "OpenAI runs the agent
+  harness. Your application sends it work and receives results."
+
+So "can I use Claude with OpenAI's agents?" has two answers. With the SDK, yes.
+With the hosted API, OpenAI's documentation shows OpenAI models only — every
+example uses `gpt-6-astra`, and we could not find a documented way to run a
+non-OpenAI model on the hosted path.
+
+Everything below is about hosted runtimes: the ones that give your agent a
+machine.
+
+## Why teams look for an alternative
+
+Five reasons come up, and each one is on OpenAI's own pages:
+
+1. **Model choice.** The hosted API is built around OpenAI models. If your
+   product runs best on Claude, or you route by cost to Kimi or DeepSeek, the
+   hosted path is not where that happens.
+2. **Data terms.** "The Agents API currently supports data residency only in the
+   United States and does not support Zero Data Retention (ZDR)." Choosing a
+   self-hosted sandbox "does not make the Agents API ZDR-eligible."
+3. **One bill, one vendor.** "Model usage is billed at the selected model's API
+   rates … OpenAI-hosted sandboxes use standard container rates." Tokens and
+   compute both go to OpenAI.
+4. **Idle lifetime.** "If activity and keep-alives stop for an hour, the sandbox
+   can be deleted." Files under `/workspace/outputs` survive as artifacts;
+   everything else in the workspace does not.
+5. **Beta churn.** Every request carries `OpenAI-Beta: agents=v1`. Names and
+   behaviour can move before general availability.
+
+None of these make the Agents API wrong. They make it a specific choice.
+
+## The alternatives, briefly
+
+| | Who runs the loop | Models | Sandbox |
+|---|---|---|---|
+| OpenAI Agents API | OpenAI | OpenAI | OpenAI-hosted, self-hosted, or a partner |
+| OpenAI Agents SDK + a sandbox provider | You | Any, via adapters | Whichever provider you wire up |
+| Claude Managed Agents | Anthropic | Claude | Anthropic-hosted, or self-hosted |
+| Gobare | Gobare | Any connected key | Gobare-hosted |
+
+**Agents SDK plus your own sandbox** is the most flexible and the most work. You
+get every model and every sandbox, and you also own the queue, the retries, the
+lifecycle, the event stream and the webhook delivery. Pick it if orchestration
+is something you want to own.
+
+**Claude Managed Agents** is the same idea as OpenAI's with Anthropic on the
+other side. Pick it if you are committed to Claude.
+
+**Gobare** is the hosted shape without the model coupling: we run the agent and
+the machine, you bring the key.
+
+## The same request, side by side
+
+OpenAI's quickstart creates a session like this:
+
+```bash
+curl https://api.openai.com/v1/agents/sessions \
+  -H "OpenAI-Beta: agents=v1" \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": {
+      "model": "gpt-6-astra",
+      "instructions": "Write clean code, run it, and report the actual output."
+    },
+    "environment": { "type": "openai_hosted" },
+    "input": "Create tree.py, a script that prints the files in the current directory. Run it.",
+    "stream": true
+  }'
+```
+
+On Gobare, connect a key once, then create the session:
+
+```bash
+# Once per organization. The key is verified on save and never enters a sandbox.
+curl -X POST https://api.gobare.dev/v1/model-credentials \
+  -H "Authorization: Bearer $GOBARE_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"key":"sk-ant-..."}'
+
+curl -X POST https://api.gobare.dev/v1/sessions \
+  -H "Authorization: Bearer $GOBARE_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{
+    "agent": {
+      "model": "claude-sonnet-4-6",
+      "instructions": "Write clean code, run it, and report the actual output."
+    },
+    "input": "Create tree.py, a script that prints the files in the current directory. Run it."
+  }'
+```
+
+`agent.model`, `agent.instructions` and `input` mean the same thing in both. The
+differences are deliberate: there is no beta header, no environment type because
+every session gets a Gobare sandbox, and no `stream` flag because events come
+from their own endpoint or a webhook.
+
+## Moving over: what maps to what
+
+| OpenAI Agents API | Gobare |
+|---|---|
+| `POST /v1/agents/sessions` | `POST /v1/sessions` |
+| `agent.model`, `agent.instructions`, `input` | Same fields |
+| Streamed response on create | `GET /v1/sessions/{id}/events` (SSE, resumable with `Last-Event-ID`), or signed webhooks |
+| `/workspace/outputs` becomes artifacts | Same path, same rule |
+| Keep-alives; deletable after an hour idle | Paused after 5 idle minutes and woken by the next input; paused time is free |
+| Vault credentials keep secrets out of the sandbox | The model key never enters the sandbox; other secrets are injected as environment variables |
+| Subagents inside a session | No subagents; your service runs several sessions as a crew |
+| Function tools | Function tools, plus approvals and questions a person or your code can answer |
+| Model tokens and containers billed by OpenAI | Tokens billed by your provider; sandbox compute is ours |
+
+The full list of intentional differences is in
+[Design decisions](https://docs.gobare.dev/design-decisions).
+
+## Where Gobare loses
+
+The part worth reading before you switch.
+
+- **A workspace has a two-hour ceiling.** It is reclaimed two hours of active
+  time after it starts; paused time does not count. A turn still running then
+  ends as failed. Longer work has to be split across sessions.
+- **One sandbox provider, no bring-your-own-compute.** OpenAI lets you point the
+  runtime at your own machines or a partner. We don't.
+- **Secrets other than the model key live in the sandbox.** OpenAI's vault
+  credentials keep real values outside it. Ours do not, for anything except the
+  model key.
+- **No subagents.** If you want the agent itself to spawn helpers, OpenAI has it
+  and we do not.
+- **Concurrency is capped.** 25 sessions per organization by default, raised by
+  asking. A session holds its slot until you delete it.
+- **Not a ZDR service either.** We store the transcript, because the transcript
+  is part of what you are paying for.
+- **Pricing is not published yet.** Free while in alpha, with no margin on
+  tokens. The rate for compute is not set.
+
+## How to decide
+
+Ask three questions:
+
+1. **Does it have to be an OpenAI model?** If yes, use OpenAI's Agents API.
+2. **Do you want to own the loop and the lifecycle?** If yes, use the Agents SDK
+   with a sandbox provider you choose.
+3. **Neither?** You want a hosted session on your own key. That is what Gobare
+   is for.
+
+## Try it
+
+The [quickstart](https://docs.gobare.dev/quickstart) goes from a token to a
+finished turn in three calls. The API is described in full at
+[api.gobare.dev/v1/openapi.json](https://api.gobare.dev/v1/openapi.json), no
+token needed.
+
+*Sources, checked 27 September 2026:* OpenAI
+[Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview),
+[quickstart](https://developers.openai.com/api/docs/guides/agents-api/quickstart),
+[architecture](https://developers.openai.com/api/docs/guides/agents-api/architecture),
+[OpenAI-hosted sandboxes](https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted),
+[Agents SDK models](https://openai.github.io/openai-agents-python/models/);
+Anthropic [self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes);
+Gobare [design decisions](https://docs.gobare.dev/design-decisions),
+[limits](https://docs.gobare.dev/limits).

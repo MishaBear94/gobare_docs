@@ -1,0 +1,195 @@
+---
+title: "I read the sandbox docs of three agent runtime APIs. They don't agree on what a session is."
+description: "Perplexity, OpenAI and Gobare give three different answers to one question: when your agent stops typing, what happens to its machine? Quoted from each one's docs, including where each loses."
+date: "2026-09-27"
+---
+
+Disclosure up front: I work on one of the three. I've tried to make that
+irrelevant by quoting the other two rather than characterising them, and by
+including a section on where each of us loses. All quotes are from public
+documentation, checked 27 September 2026.
+
+Three agent runtimes. One question: when your agent stops typing, what happens
+to its machine?
+
+Perplexity, on their [sandbox tool](https://docs.perplexity.ai/docs/agent-api/tools/sandbox):
+
+> "Multiple executions in a single response share the same container: files
+> written and packages installed by an earlier step are still there for a later
+> one."
+
+OpenAI, on [hosted sandboxes](https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted):
+
+> "If activity and keep-alives stop for an hour, the sandbox can be deleted."
+
+…and separately, that files written to `/workspace/outputs` become immutable
+artifacts on turn completion, and those copies "remain downloadable after the
+sandbox expires."
+
+Gobare, on [limits](https://docs.gobare.dev/limits):
+
+> "A workspace is also paused after five minutes with nothing happening, and
+> woken by the next thing you send."
+
+Three different answers. None of them wrong — they're building different things.
+But if you pick one without noticing, you find out at the worst possible moment:
+an hour into a job, at the exact step where the work was supposed to land.
+
+## First, a distinction almost every comparison gets wrong
+
+OpenAI ships two things with confusingly similar names, and they are not layers
+of each other. They are mutually exclusive answers to one question: who runs the
+agent loop?
+
+The **Agents SDK** is open source and runs in your process. You own the loop. It
+is genuinely provider-flexible — Claude and Gemini work through LiteLLM in
+Python, or the AI SDK adapter in TypeScript.
+
+The **Agents API** is hosted. OpenAI runs the loop, and the managed sandbox,
+artifacts, and Responses path are built around it. OpenAI's own guidance leans
+toward their models here and warns that certain features depend on the
+Responses path rather than compatibility surfaces.
+
+So "can I use Claude with OpenAI's agent stuff?" has two answers depending on
+which product you meant. In the SDK, yes, on a well-trodden path. In the hosted
+Agents API — the one with the sandbox — you're on a second-class path, and
+features that depend on the Responses path may not carry over.
+
+Everything below is strictly about hosted runtimes: the ones that give you a
+machine.
+
+## Three answers to one question
+
+Each of these is a coherent answer to a different product question.
+
+**Perplexity's is the tightest.** Their sandbox is a tool — you enable it, the
+model writes and runs its own code, and you get the code back in the response so
+you can inspect it. Multiple executions within one response share a container,
+so intermediate files work. Between responses, nothing is promised. That is
+exactly right for what they're building: an answer engine that can compute. If
+what you want is an answer, paying to keep a machine alive afterwards is pure
+waste.
+
+**OpenAI's hosted sandbox is session-scoped**, with keep-alives between turns,
+and an explicit durability escape hatch: write to `/workspace/outputs` and it
+becomes an immutable artifact that outlives the sandbox. That's a clean
+contract. It also tells you exactly what the sandbox is for — a place to do
+work, not a place to keep it.
+
+Their [self-hosted option](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted)
+is the interesting one, and underdiscussed. You can point the runtime at your
+own compute; [Daytona](https://developers.openai.com/api/docs/guides/agents-api/environments/providers/daytona)
+is documented as a provider. Their own guide flags the trap: the executor's
+connection to OpenAI is outbound and long-lived, and the provider's inactivity
+tracking doesn't see it, so you must set `auto_stop_interval=0` or your sandbox
+stops mid-agent.
+
+**Gobare** — the one I work on — pauses the sandbox when a session idles and,
+before the machine is reclaimed, snapshots the workspace files back to the
+control plane and restores them on wake. The transcript lives in the control
+plane regardless. It is best-effort, not total: git history, installed
+dependencies and running processes are not in the snapshot, and a workspace over
+300MB is skipped. Different bet: that the working directory should outlive the
+machine, not only the files you remembered to export.
+
+## When the difference actually bites
+
+Three concrete cases where the architectural answer changes what you can build:
+
+- **A job longer than the idle window.** A refactor that runs 40 minutes across
+  several turns, with gaps while your dispatcher does something else. On a
+  per-request container this isn't expressible — each response starts clean. On
+  a session sandbox it works, as long as you understand what "idle" means to
+  your provider. Read that definition carefully; on self-hosted compute, it is
+  your definition and it will not match the runtime's.
+- **A task that has to stop and ask.** Human approval mid-run means the machine
+  waits, possibly for hours. Whether that wait is free, expensive, or impossible
+  depends entirely on how the runtime treats an idle machine — the three answers
+  above.
+- **An agent that serves something.** If the agent starts a local web server and
+  you want it reachable (a live UI preview, say), the machine has to exist when
+  the visitor arrives — which might be long after the agent stopped generating
+  code. If the sandbox vanishes when execution finishes, your preview URL dies
+  with it.
+
+None of these are hypothetical failure modes of a bad runtime. They are the
+places where a correct runtime, chosen for the wrong shape of work, produces a
+system you cannot finish.
+
+## The price of a machine is already public
+
+Perplexity publishes something the others don't: a price for the container
+itself. From their [pricing page](https://docs.perplexity.ai/getting-started/pricing):
+
+> "$0.03 per session (≤20-min billing window)"
+
+and from the sandbox docs, a session "covers up to 20 minutes of active use for
+billing purposes." That's roughly $0.09 an hour for a managed container, and
+it's the clearest public anchor available for what hosted agent compute costs.
+
+The rest of their pricing explains the shape of the product. Third-party model
+tokens pass through at published provider rates. Tools are metered: `web_search`
+at $0.0025 a call, `fetch_url` at $0.0005. The money is in the search index —
+which is the asset they have and nobody else does. The Agent API is how you
+reach it.
+
+Worth naming plainly, because it sets the floor for everyone else: for one of
+the three, the runtime does not need to be profitable.
+
+## Where each of these loses
+
+The part that makes the rest of this worth reading.
+
+- **Perplexity has no session state.** If your work needs to survive a response
+  boundary, you build that state machine yourself on top of
+  `previous_response_id`, and the underlying machine is not part of what
+  survives.
+- **OpenAI hosted deletes the sandbox after an hour of quiet** and preserves only
+  what you explicitly published to `/workspace/outputs`. If your valuable state
+  is a half-finished working tree rather than a file you remembered to export,
+  it's gone. And on the hosted path, non-OpenAI models remain second-class
+  citizens.
+- **OpenAI self-hosted hands you the lifecycle**, which means it also hands you
+  the outages and edge-case management. Their Daytona guide is an admirably
+  honest read about how many ways idle-stop can go wrong.
+- **Gobare is single-provider:** strictly E2B, with no bring-your-own-compute.
+  That's real lock-in and the most legitimate criticism of us on this page. A
+  workspace is also reclaimed two hours of active time after it starts; paused
+  time doesn't count, but a turn still running then ends as failed, so work that
+  genuinely needs longer has to be split across sessions. We have no model
+  fallback chain — Perplexity lets you pass up to five models and tries them in
+  order, which is a straightforwardly better answer to provider outages than
+  anything we have today. Their configuration profiles are versioned; our saved
+  agents are not. And we have no search index and no intention of building one.
+
+## The question to ask
+
+Not "which runtime is best." Ask:
+
+> After my agent stops typing, do I still need the machine?
+
+If no — you want an answer, not a workspace — a per-request container is the
+right shape and you shouldn't pay for more. Perplexity's model is the honest
+version of that.
+
+If yes, you're choosing between owning the compute yourself and finding someone
+who will manage its state for you. Both are defensible choices. What's not
+defensible is not knowing which one you picked — which is easy to do, because
+every one of these products will happily run your first 30-second demo.
+
+The docs answer it. They're just three different answers, and none of them are
+on the page you'd think to look at.
+
+*Sources, checked 27 September 2026:*
+Gobare [Sessions](https://docs.gobare.dev/sessions) ·
+[Design decisions](https://docs.gobare.dev/design-decisions) ·
+[Limits](https://docs.gobare.dev/limits).
+OpenAI [OpenAI-hosted sandboxes](https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted) ·
+[Self-hosted sandboxes](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted) ·
+[Daytona provider](https://developers.openai.com/api/docs/guides/agents-api/environments/providers/daytona) ·
+[Models and providers](https://developers.openai.com/api/docs/guides/agents/models) ·
+[Architecture](https://developers.openai.com/api/docs/guides/agents-api/architecture).
+Perplexity [Sandbox tool](https://docs.perplexity.ai/docs/agent-api/tools/sandbox) ·
+[Tools overview](https://docs.perplexity.ai/docs/agent-api/tools/overview) ·
+[Pricing](https://docs.perplexity.ai/getting-started/pricing) ·
+[Create Agent Response](https://docs.perplexity.ai/api-reference/agent-post).
