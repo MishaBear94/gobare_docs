@@ -1,7 +1,13 @@
 ---
-title: "Events"
-description: "You want to watch a session instead of polling it"
+title: "Events: a resumable agent event stream"
+sidebarTitle: "Events"
+description: "You want to watch a session instead of polling it — server-sent events you can resume after a dropped connection"
 ---
+Everything an agent does in a session — its messages, tool calls, results and
+state changes — is an event, persisted before it is streamed. A client that
+drops its connection reconnects with the last event id it saw and receives
+everything after it, in order, so a reload or a deploy loses nothing.
+
 Server-sent events, resumable. Two streams:
 
 | | |

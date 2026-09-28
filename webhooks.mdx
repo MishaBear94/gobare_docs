@@ -1,9 +1,16 @@
 ---
-title: "Webhooks"
-description: "You want to be told rather than to watch"
+title: "Webhooks for long-running agents"
+sidebarTitle: "Webhooks"
+description: "You want to be told rather than to watch — signed webhooks for agent sessions that run for minutes or hours"
 ---
-Be told what happened instead of watching for it. Delivery is **at least once**,
-which is the only promise worth making over a network we do not control.
+An agent that runs for minutes or hours should not need your backend to hold a
+connection open until it finishes. Subscribe an HTTPS endpoint once, and Gobare
+POSTs to it when a turn completes, fails, or is waiting on you — signed with
+HMAC-SHA256 and retried for about nine hours. Your request returns immediately;
+the result arrives on its own.
+
+Delivery is **at least once**, which is the only promise worth making over a
+network we do not control.
 
 ## Subscribing
 
