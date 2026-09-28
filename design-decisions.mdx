@@ -7,6 +7,10 @@ reasoning behind each. They are written down because a decision nobody
 documented gets reported as a bug — and because knowing *why* a thing behaves
 as it does is what lets you build on it confidently rather than defensively.
 
+These are decisions about this API. For a comparison with OpenAI's Agents API
+and the other hosted, wire-compatible and self-hosted options, see [OpenAI
+Agents API alternatives](https://gobare.dev/blog/openai-agents-api-alternative).
+
 ## 1. A message sent while the agent is busy queues; it does not steer
 
 Send `input.message` during a running turn and it is **accepted and queued**.
