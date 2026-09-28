@@ -115,7 +115,8 @@ second of active CPU. The model is whatever your harness is configured to call.
 **Claude Managed Agents** is the same idea as OpenAI's, with Anthropic on the
 other side: Anthropic runs the loop, tools execute in Anthropic-managed
 sandboxes, and a self-hosted sandbox option moves tool execution onto your
-infrastructure. Pick it if you're committed to Claude.
+infrastructure. Pick it if you're committed to Claude. We compare it in detail in
+[Claude Managed Agents alternative](https://gobare.dev/blog/claude-managed-agents-alternative).
 
 **Mistral Agents API** gives agents built-in tools including a code interpreter
 that runs code "in an isolated container", plus web search, image generation
@@ -213,7 +214,7 @@ from their own endpoint or a webhook.
 | `agent.model`, `agent.instructions`, `input` | Same fields |
 | Streamed response on create | `GET /v1/sessions/{id}/events` (SSE, resumable with `Last-Event-ID`), or signed webhooks |
 | `/workspace/outputs` becomes artifacts | Same path, same rule |
-| Keep-alives; deletable after an hour idle | Paused after 5 idle minutes and woken by the next input; paused time is free |
+| Keep-alives; deletable after an hour idle | Paused after 5 idle minutes and woken by the next input; reclaimed two hours after creation |
 | Vault credentials keep secrets out of the sandbox | The model key never enters the sandbox; other secrets are injected as environment variables |
 | Subagents inside a session | No subagents; your service runs several sessions as a crew |
 | Function tools | Function tools, plus approvals and questions a person or your code can answer |
@@ -228,9 +229,11 @@ The part worth reading before you switch.
 
 - **Not wire-compatible.** If you want to keep the `openai` package and change
   only a URL, Rebyte or Open Managed Agents is a smaller move.
-- **A workspace has a two-hour ceiling.** It is reclaimed two hours of active
-  time after it starts; paused time does not count. A turn still running then
-  ends as failed. Longer work has to be split across sessions.
+- **A workspace has a two-hour ceiling.** A sandbox is reclaimed two hours after
+  it was created, paused time included, and a turn still running then ends as
+  failed. The workspace is snapshotted first and the next input starts a fresh
+  sandbox from it; sessions with a published address or an open SSH connection
+  are exempt.
 - **One sandbox provider, no bring-your-own-compute.** OpenAI lets you point the
   runtime at your own machines or a partner. We don't.
 - **Secrets other than the model key live in the sandbox.** OpenAI's vault

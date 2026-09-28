@@ -90,8 +90,8 @@ machine can be paused, woken or rebuilt; the session's history does not move.
 ### 2. Put the machine to sleep, and wake it
 
 A sandbox that runs while nobody needs it is a bill. In Gobare a workspace
-pauses after five minutes with nothing happening and wakes on the next input;
-paused time is free. The runtime has to tell "idle" from "busy with a long
+pauses after five minutes with nothing happening and wakes on the next input.
+The runtime has to tell "idle" from "busy with a long
 command", which is the part that is easy to get wrong — a naive idle timer
 kills a build halfway through.
 

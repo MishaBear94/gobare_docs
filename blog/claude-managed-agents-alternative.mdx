@@ -1,6 +1,6 @@
 ---
-title: "Claude Managed Agents is the best harness for Claude. Here's when you need something else."
-description: "If you build only on Claude, use Claude Managed Agents. Four conditions where you need an alternative, quoted from Anthropic's docs, and where Gobare loses."
+title: "Claude Managed Agents alternative: when you need something else"
+description: "Looking for a Claude Managed Agents alternative? When to stay, the open-source options, and a hosted runtime for any model, quoted from Anthropic's docs."
 date: "2026-09-27"
 category: "Guides"
 tags: "Claude, Managed Agents"
@@ -13,16 +13,19 @@ author: "Misha"
 
 ---
 
-If your team builds AI agents exclusively on Claude, use **Claude Managed Agents**.
+Claude Managed Agents is the best harness for Claude. If your team builds AI agents exclusively on Claude, use it.
+
+If you are searching for a Claude Managed Agents alternative anyway, the right one depends on why you are leaving. This page covers the five reasons we see, the open-source options if you want to run the platform yourself, and a hosted option if you don't.
 
 Anthropic has built what is arguably the most complete hosted agent harness available today. It decouples the reasoning engine from execution infrastructure, giving you managed sandboxes, built-in toolsets, and multi-agent coordination without writing boilerplate loops.
 
-You only need an alternative if your system hits one of four specific engineering boundary conditions:
+You only need an alternative if your system hits one of five boundary conditions:
 
 1. Your agent must run on a model Anthropic doesn't serve (e.g., DeepSeek, Qwen, Gemini, or a customer's required provider).
 2. You need to inspect or modify the agent harness code.
 3. You cannot afford to lose lifecycle events to a webhook that gives up after three attempts.
 4. An engineer needs direct shell access to a managed sandbox to debug its state.
+5. Your compliance programme requires Zero Data Retention or a HIPAA BAA.
 
 Here is a breakdown of what Claude Managed Agents gets right, where its boundaries sit, and how to evaluate alternative architectures.
 
@@ -38,21 +41,18 @@ If you fit its target profile, it handles several complex infra problems out of 
 * **Flexible sandboxing**: Sessions run in *"an Anthropic-managed cloud sandbox, or a self-hosted sandbox on your own infrastructure."*
 * **Cron deployments**: *"Recurring agent runs on a cron schedule through scheduled deployments."*
 * **Session budgets**: Sessions can carry hard spend caps. When a session reaches its cap, it *"pauses and goes idle with the stop reason `budget_reached`."*
-* **Automatic checkpointing**: *"When a session goes idle, its sandbox is checkpointed, preserving the full sandbox state, including the filesystem, installed packages, and any files the agent created."* Checkpoints *"are only preserved for 30 days after the session's last activity."*
+* **Simple, published pricing**: *"$0.08 per session-hour"*, and runtime *"accrues only while the session's status is `running`."* Idle time is not billed.
+* **Automatic checkpointing**: *"When a session goes idle, its sandbox is checkpointed, preserving the full sandbox state, including the filesystem, installed packages, and any files the agent created."* Checkpoints are *"preserved for 30 days after the sandbox is created."*
 
 For teams standardizing entirely on Anthropic's model family, this is an exceptionally clean contract.
 
 ---
 
-## Four reasons teams look elsewhere
+## Five reasons teams look for a Claude Managed Agents alternative
 
 ### 1. The model is not Claude
 
-Claude Managed Agents is single-vendor. Per Anthropic's setup guide, the `model` field is:
-
-> *"Required. The Claude model that powers the agent."*
-
-*"Claude 4.5 and later models are supported."* If your product requires model routing (using DeepSeek or Qwen for cheaper bulk turns, routing to OpenAI or Gemini based on user preference, or serving regions where Anthropic endpoints are unavailable), Claude Managed Agents can't run it.
+Claude Managed Agents is single-vendor. Anthropic describes it as the harness *"for running Claude as an autonomous agent"*, and the agent setup guide says *"Claude 4.5 and later models are supported."* If your product requires model routing (using DeepSeek or Qwen for cheaper bulk turns, routing to OpenAI or Gemini based on user preference, or serving regions where Anthropic endpoints are unavailable), Claude Managed Agents can't run it.
 
 ### 2. You need to read or modify the agent harness
 
@@ -74,9 +74,27 @@ When an agent gets stuck during a long-running task, event streams are often not
 
 Anthropic's docs describe event streams, tool execution details and a Console tracing view. I didn't find an interactive shell into an Anthropic-managed cloud sandbox. With a self-hosted sandbox the machine is yours, so you can get in, but then you run the compute.
 
+### 5. Your compliance needs Zero Data Retention
+
+Anthropic is direct about this: *"Managed Agents is not currently eligible for Zero Data Retention or HIPAA Business Associate Agreement (BAA) coverage"*, because sessions store history, sandbox state and outputs server-side.
+
+Gobare doesn't solve this one either: it also stores the transcript. If ZDR is a hard requirement, the answer is an open-source runtime on your own infrastructure.
+
 ---
 
-## Architectural landscape: how alternatives compare
+## Open-source Claude Managed Agents alternatives
+
+The top of most searches for an alternative is open source, and for good reason: if you must own the stack, self-host it.
+
+* **[OpenMA](https://github.com/openma-ai/open-managed-agents)** (Apache-2.0) describes itself as *"an open-source alternative to Claude Managed Agents and OpenAI Agents API."* Node.js, Docker or Cloudflare, or their hosted version; you choose the models, harnesses and sandboxes.
+* **[open-managed-agents](https://github.com/rogeriochaves/open-managed-agents)** (AGPL-3.0): self-hostable, multi-LLM, with org, team and RBAC governance.
+* **[AstraBox](https://github.com/Colton-z/AstraBox)**: a newer project, posted as a Show HN in September 2026.
+
+The trade is the usual one: full control and any model, in exchange for running a control plane, a database and sandboxes yourself.
+
+---
+
+## Claude Managed Agents alternatives compared
 
 When stepping outside Claude Managed Agents, runtime architectures fall into three primary patterns:
 
@@ -95,13 +113,13 @@ When stepping outside Claude Managed Agents, runtime architectures fall into thr
    + Sandbox Provider      + Sandbox Provider     (OpenAI models only)     (Any model / BYOK)
 ```
 
-| Dimension | Claude Managed Agents | OpenAI Agents API | SDK + sandbox (e.g., E2B / Daytona) | Gobare |
-| --- | --- | --- | --- | --- |
-| **Agent loop** | Managed (Anthropic) | Managed (OpenAI) | Your process | Managed (open-source `pi`) |
-| **Model choice** | Claude 4.5+ only | OpenAI models | Any via adapters (OpenAI Agents SDK); Claude (Claude Agent SDK) | Nine providers plus any OpenAI- or Anthropic-compatible endpoint, your own key |
-| **Sandbox** | Anthropic-hosted or self-hosted | OpenAI-hosted, self-hosted or a partner | Third-party provider | Managed E2B microVMs |
-| **Interactive shell** | Not documented for cloud sandboxes; yours on self-hosted | Not compared here | Depends on provider | Yes (`ssh -p 2222 s-$SESSION@ssh.gobare.dev`) |
-| **Webhook durability** | Up to 3 attempts, then dropped | Not compared here | Your implementation | 6 attempts over ~9 hours, dead-letter tracking |
+| Dimension | Claude Managed Agents | OpenAI Agents API | Open source (e.g., OpenMA) | SDK + sandbox (e.g., E2B / Daytona) | Gobare |
+| --- | --- | --- | --- | --- | --- |
+| **Agent loop** | Managed (Anthropic) | Managed (OpenAI) | Self-hosted platform | Your process | Managed (open-source `pi`) |
+| **Model choice** | Claude 4.5+ only | OpenAI models | Any, configured by you | Any via adapters (OpenAI Agents SDK); Claude (Claude Agent SDK) | Nine providers plus any OpenAI- or Anthropic-compatible endpoint, your own key |
+| **Sandbox** | Anthropic-hosted or self-hosted | OpenAI-hosted, self-hosted or a partner | Your choice | Third-party provider | Managed E2B microVMs |
+| **Interactive shell** | Not documented for cloud sandboxes; yours on self-hosted | Not compared here | Yours | Depends on provider | Yes (`ssh -p 2222 s-$SESSION@ssh.gobare.dev`) |
+| **Webhook durability** | Up to 3 attempts, then dropped | Not compared here | Depends on the project | Your implementation | 6 attempts over ~9 hours, dead-letter tracking |
 
 ---
 
@@ -187,13 +205,34 @@ When selecting a managed agent runtime, apply this decision matrix:
 
 1. **Are you building strictly with Claude models and need enterprise features like self-hosted sandboxes, cron scheduling, and session budgets?** → Use **Claude Managed Agents**.
 2. **Do you need full ownership of the execution loop, custom agent frameworks (LangGraph, AutoGen), and in-house orchestration?** → Use an **SDK (OpenAI Agents SDK / Claude Agent SDK)** with a sandbox provider (E2B, Daytona, Modal).
-3. **Do you want a managed runtime API, but need model choice with your own key, an open-source inspectable harness (`pi`), durable webhooks, or direct SSH access?** → That is precisely why we built **Gobare**.
+3. **Do you want the Managed Agents API shape, but on your own infrastructure, with ZDR?** → Self-host an **open-source alternative** such as OpenMA.
+4. **Do you want a managed runtime API, but need model choice with your own key, an open-source inspectable harness (`pi`), durable webhooks, or direct SSH access?** → That is precisely why we built **Gobare**.
 
 ---
 
-**Sources (all checked 27 September 2026):**
+## Claude Managed Agents alternative: FAQ
 
-* **Claude Managed Agents**: [Overview](https://platform.claude.com/docs/en/managed-agents/overview) · [Agent setup](https://platform.claude.com/docs/en/managed-agents/agent-setup) · [Sessions](https://platform.claude.com/docs/en/managed-agents/sessions) · [Session event stream](https://platform.claude.com/docs/en/managed-agents/events-and-streaming) · [Webhooks](https://platform.claude.com/docs/en/managed-agents/webhooks) · [Reference](https://platform.claude.com/docs/en/managed-agents/reference)
+**Can Claude Managed Agents use GPT, DeepSeek or other non-Claude models?**
+No. Anthropic documents it as the harness for running Claude, and *"Claude 4.5 and later models are supported."* For another provider's model you need a different runtime.
+
+**Is there an open-source alternative to Claude Managed Agents?**
+Yes: OpenMA (Apache-2.0), open-managed-agents (AGPL-3.0) and AstraBox, all self-hosted. OpenMA also offers a hosted version.
+
+**Is there a hosted alternative that isn't tied to one model?**
+Gobare is one: a managed runtime API where you connect your own key from any of nine providers or a compatible endpoint. OpenAI's Agents API is hosted too, but built around OpenAI models.
+
+**How much does Claude Managed Agents cost?**
+Tokens at standard Claude rates plus $0.08 per session-hour, counted only while a session is running.
+
+**Is Claude Managed Agents eligible for Zero Data Retention?**
+Not currently, and not for HIPAA BAA coverage either.
+
+---
+
+**Sources (all checked 28 September 2026):**
+
+* **Claude Managed Agents**: [Pricing](https://platform.claude.com/docs/en/about-claude/pricing) · [Overview](https://platform.claude.com/docs/en/managed-agents/overview) · [Agent setup](https://platform.claude.com/docs/en/managed-agents/agent-setup) · [Sessions](https://platform.claude.com/docs/en/managed-agents/sessions) · [Session event stream](https://platform.claude.com/docs/en/managed-agents/events-and-streaming) · [Webhooks](https://platform.claude.com/docs/en/managed-agents/webhooks) · [Reference](https://platform.claude.com/docs/en/managed-agents/reference)
+* **Open source**: [OpenMA](https://github.com/openma-ai/open-managed-agents) · [open-managed-agents](https://github.com/rogeriochaves/open-managed-agents) · [AstraBox](https://github.com/Colton-z/AstraBox)
 * **Gobare**: [Why Gobare](https://docs.gobare.dev/why-gobare) · [Design decisions](https://docs.gobare.dev/design-decisions) · [Limits](https://docs.gobare.dev/limits) · [Webhooks](https://docs.gobare.dev/webhooks) · [Model credentials](https://docs.gobare.dev/model-credentials)
 
 *New to the term? [What is an agent runtime?](https://gobare.dev/blog/what-is-an-agent-runtime) explains the layer this post is about — between the harness and the sandbox.*
