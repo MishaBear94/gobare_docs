@@ -73,11 +73,13 @@ Written down so you find out here rather than halfway through a build:
   machines, when you ask.
 - **A weak model makes a weak agent.** Choosing the model is yours, and so is
   that consequence.
-- **An idle, unpublished workspace is reclaimed after two hours**, with a
-  snapshot taken first; a workspace over 300 MB is not snapshotted, and
+- **An unpublished workspace is reclaimed two hours after its sandbox started**,
+  busy or not, with a snapshot taken first; a workspace over 300 MB is not snapshotted, and
   `node_modules` and `.git` are not part of the snapshot. See [limits](/limits).
 
 ## Next
 
 - [quickstart](/quickstart) — from a token to a finished turn
+- [Claude Managed Agents alternative](https://gobare.dev/blog/claude-managed-agents-alternative) — how this compares with Anthropic's hosted agent, and when to stay on it
+- [OpenAI Agents API alternative](https://gobare.dev/blog/openai-agents-api-alternative) — the same comparison with OpenAI's
 - [Build without writing code](/without-code) — the same agent, in the Console, for people who would rather describe than call

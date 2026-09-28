@@ -232,8 +232,12 @@ survive it; see [the artifacts section of the quickstart](/quickstart).
 
 A workspace is also **paused after five minutes with nothing happening**, and
 woken by the next thing you send (5 minutes). Pausing is not an ending: the transcript
-lives in the control plane, so the agent comes back knowing what it knew. Time
-spent paused does not count against the 2 hours.
+lives in the control plane, so the agent comes back knowing what it knew. The
+2 hours run from when the sandbox started, and paused time counts: the ceiling
+is on the machine's age, not on how long it worked. Before a sandbox is
+reclaimed its workspace is snapshotted, and the next thing you send starts a
+fresh sandbox from that snapshot with a new 2 hours. A session with a
+published address or an open SSH connection is not reclaimed.
 
 If you have work that genuinely needs longer than 2 hours, break it into
 turns across sessions, or tell us — the number is a resource decision, not a
