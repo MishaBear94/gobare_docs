@@ -11,7 +11,7 @@ author: "Gobare team"
 
 You want a feature where a user asks for something and a coding agent goes and does it: clones a repo, runs the tests, writes a report. The work takes minutes. You don't want a request thread waiting that long, and you don't want to poll.
 
-The shape that works is one POST out and one webhook back. Your API returns `202` straight away, the agent works on its own machine, and a signed webhook tells your backend when there is something to collect. This post is the [Gobare quickstart](https://docs.gobare.dev/quickstart) rebuilt that way. The three snippets below are condensed from one runnable file, linked at the end.
+The shape that works is one POST out and one webhook back. Your API returns `202` straight away, the agent works on its own machine, and a signed webhook tells your backend when there is something to collect. This post is the [Gobare quickstart](https://docs.gobare.dev/quickstart) rebuilt that way. The three snippets below are condensed from one runnable file, linked at the end. If you are weighing this against OpenAI's hosted Agents API, the request shapes are close; [OpenAI Agents API alternatives](https://gobare.dev/blog/openai-agents-api-alternative) puts them side by side.
 
 ```
 client ── POST /jobs ──▶ your API ── POST /v1/sessions ──▶ Gobare: agent on its own machine
