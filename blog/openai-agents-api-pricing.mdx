@@ -1,0 +1,134 @@
+---
+title: "OpenAI Agents API pricing: what a hosted agent session actually costs"
+description: "The Agents API has no fee of its own. A session costs model tokens, a container billed per 20 minutes, and any tools. Official rates, a worked example, and how the bill splits on the alternatives."
+date: "2026-09-28"
+category: "Guides"
+tags: "OpenAI, Pricing"
+coverText: "OpenAI Agents API|pricing"
+author: "Gobare team"
+---
+
+OpenAI's Agents API went into public beta on 10 September 2026, and its pricing
+fits in one sentence from the overview: "Model usage is billed at the selected
+model's API rates. OpenAI tools use their standard rates, and OpenAI-hosted
+sandboxes use standard container rates."
+
+So there is no Agents API fee. A session costs three things, and this page puts
+official numbers on each. All figures are from OpenAI's
+[pricing page](https://developers.openai.com/api/docs/pricing), checked on
+28 September 2026.
+
+Disclosure: we build [Gobare](https://gobare.dev), a hosted agent runtime that
+runs on your own model key. The last section says how the bill splits there and
+on the other alternatives.
+
+## 1. The container
+
+An OpenAI-hosted sandbox is billed per container, per 20-minute session:
+
+| Memory | Price per 20-minute session |
+|---|---|
+| 1 GB | $0.03 |
+| 4 GB | $0.12 |
+| 16 GB | $0.48 |
+| 64 GB | $1.92 |
+
+Hosted Shell and Code Interpreter share these rates. A self-hosted sandbox or a
+sandbox partner moves this line to your own bill or the partner's.
+
+## 2. The model
+
+Tokens are billed at the chosen model's rates. The two ends of the GPT-6 range,
+per million tokens, short context:
+
+| Model | Input | Cached input | Output |
+|---|---|---|---|
+| gpt-6-astra | $10.00 | $1.00 | $50.00 |
+| gpt-6-luna | $0.10 | $0.01 | $0.50 |
+
+`gpt-6-astra` is the model every example in the Agents API docs uses. The
+difference between the two is a factor of a hundred.
+
+## 3. The tools
+
+Only if the agent uses them:
+
+- **Web search:** $10.00 per 1,000 calls, plus search content tokens at model
+  rates.
+- **File search:** $2.50 per 1,000 calls, and storage at $0.10 per GB per day
+  after the first free GB.
+
+## A worked example
+
+One task: the agent reads a small repository, makes a change, runs the tests.
+Say it takes one 20-minute container window at 4 GB, consumes 60,000 input
+tokens and produces 10,000 output tokens, with no tool calls. This is
+arithmetic on the published rates, not a measurement:
+
+| | gpt-6-astra | gpt-6-luna |
+|---|---|---|
+| Input tokens (60k) | $0.60 | $0.006 |
+| Output tokens (10k) | $0.50 | $0.005 |
+| Container (4 GB, one window) | $0.12 | $0.12 |
+| **Total** | **$1.22** | **$0.131** |
+
+Two things follow. On the expensive model, tokens are most of the bill and the
+container is noise. On the cheap model, the container is over 90% of the bill —
+so the sandbox, not the model, is what you are really pricing. That is also the
+point at which model choice stops being a line item and starts being a reason
+to look elsewhere.
+
+## How the bill splits on the alternatives
+
+Every hosted alternative splits the same three costs differently. The ones with
+published numbers:
+
+- **Bring-your-own-key runtimes** send token costs to your model provider at
+  that provider's rates, and charge only for the runtime. On Gobare the key is
+  yours and there is no margin on tokens; the compute rate is not published yet
+  and the service is free while in alpha.
+- **DigitalOcean Managed Agents** bills per second of active CPU. Its own
+  example: two vCPUs averaging 25% utilisation with a 4 GB memory peak for an
+  hour costs $0.060 in CPU and memory.
+- **Perplexity's sandbox tool** is $0.03 per session, where a session "covers up
+  to 20 minutes of active use for billing purposes".
+- **Self-hosted options** (Open Managed Agents, AstraBox) move the runtime and
+  the sandbox onto infrastructure you already pay for.
+
+Which of these is cheaper depends on the shape of your work: short tasks on a
+cheap model favour per-second billing, long idle waits favour anything that
+does not bill while paused.
+
+The full comparison — what each alternative keeps, which ones accept the
+official `openai` package unchanged, and where each one loses — is in
+**[OpenAI Agents API alternatives in 2026](https://gobare.dev/blog/openai-agents-api-alternative)**.
+
+## Frequently asked questions
+
+### Does the OpenAI Agents API cost extra on top of tokens?
+
+No separate fee. You pay model tokens, the container if you use an
+OpenAI-hosted sandbox, and any OpenAI tools the agent calls.
+
+### How much does an OpenAI-hosted sandbox cost?
+
+From $0.03 (1 GB) to $1.92 (64 GB) per 20-minute session per container.
+
+### What is the cheapest way to run the OpenAI Agents API?
+
+Use a small model such as gpt-6-luna and the smallest container that fits the
+task. At that point the container is most of the bill, which is worth knowing
+before you compare runtimes.
+
+### Can I use my own model key to lower the cost?
+
+Not on the hosted Agents API, which runs OpenAI models. Runtimes that take your
+own key, including Gobare, bill tokens through your provider instead — see
+[the alternatives](https://gobare.dev/blog/openai-agents-api-alternative).
+
+*Sources, checked 28 September 2026:* OpenAI
+[pricing](https://developers.openai.com/api/docs/pricing),
+[Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview);
+[DigitalOcean Managed Agents](https://www.digitalocean.com/blog/managed-agents-public-preview);
+Perplexity [pricing](https://docs.perplexity.ai/getting-started/pricing) and
+[sandbox tool](https://docs.perplexity.ai/docs/agent-api/tools/sandbox).
