@@ -12,6 +12,12 @@ where it deliberately behaves differently.
 [pi](/pi), the open-source coding agent, unmodified. You can read the code that
 decides what the agent does, and run the same agent on your own machine.
 
+In the usual vocabulary pi is the *harness*, the machine it runs on is the
+*sandbox*, and Gobare is the *agent runtime* between them — the layer that keeps
+the session's state and events, sleeps and wakes the machine, waits for people,
+and holds the model key. [What is an agent runtime?](https://gobare.dev/blog/what-is-an-agent-runtime)
+draws the line between the three.
+
 What Gobare builds is what a session *is*: a real computer around that agent,
 and three things are true of it at once.
 
