@@ -1,0 +1,257 @@
+---
+title: "What is an agent runtime? The layer between the harness and the sandbox"
+description: "An agent runtime keeps an agent's work alive over time: session state, the event history, sleep and wake, pauses for approval, and the credentials the agent must never see. How it differs from a harness, a framework and a sandbox."
+date: "2026-09-28"
+category: "Guides"
+tags: "Agent runtime, Sandboxes"
+cover: "images/what-is-an-agent-runtime-cover.jpg"
+coverText: "What is an|agent runtime?"
+author: "Misha"
+featured: "true"
+---
+
+An **agent runtime** is the layer that runs an agent's work over time. It keeps
+the session's state and its history of events, decides when the machine sleeps
+and wakes, pauses the work when a person or your code has to answer, and holds
+the credentials the agent must never read. The harness decides what the agent
+does. The sandbox is where it does it. The runtime is why it is still there
+tomorrow.
+
+That is the short answer. The long one is worth having, because the four words
+people use for this stack — framework, harness, runtime, sandbox — are used
+differently by almost everyone who writes about them. LangChain, which coined
+much of the vocabulary, says in [its own post](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my)
+that there is no clear definition of framework versus runtime versus harness.
+
+Disclosure: we build [Gobare](https://gobare.dev), which is a hosted agent
+runtime. We run the three layers as three separate things — an open-source
+harness, a third-party sandbox, and our own runtime between them — so the
+boundaries below are the ones we had to draw in code, not in a diagram.
+
+## Four words, four jobs
+
+| Layer | What it is | What it owns | Examples |
+|---|---|---|---|
+| Framework | A library you write an agent with | Your control flow: nodes, tools, routing | LangChain, CrewAI, OpenAI Agents SDK |
+| Harness | A finished agent loop around a model | How the agent thinks and acts in one turn: prompting, tool calls, context | pi, Claude Agent SDK, Codex, deepagents |
+| Runtime | The service that runs that loop over time | What survives between turns and after a crash: state, events, lifecycle, waiting, credentials | Bedrock AgentCore Runtime, Google Agent Runtime, Gobare |
+| Sandbox | An isolated machine | Where commands, files and browsers execute | E2B, Daytona, Modal, Firecracker microVMs |
+
+Two things make this table harder to read in the wild than it looks here.
+
+**Some products are all four at once.** OpenAI's Agents API and Claude Managed
+Agents each ship their own harness, runtime and sandbox behind one API. That is
+convenient, and it is also why comparisons between them and a sandbox provider
+go nowhere: they are not answering the same question.
+
+**Some writers call a sandbox a runtime.** Orca Security's
+[2026 roundup](https://orca.security/resources/blog/best-ai-agent-runtime-tools-platforms/)
+lists E2B, Modal and Daytona under "runtimes". In a narrow sense they are — code
+runs there. In the sense this page uses, they are the layer underneath: a
+sandbox gives an agent a computer; a runtime decides what happens to that
+computer, and to the work, when the agent stops typing.
+
+## One test: what is still there when the agent stops?
+
+Every layer can be told apart by one question: when the agent's process ends —
+because the turn finished, the machine was reclaimed, or something crashed —
+what is still there?
+
+- A **framework** leaves nothing. It was a library in your process.
+- A **harness** leaves whatever it wrote to disk, if anything.
+- A **sandbox** leaves its filesystem until it is destroyed.
+- A **runtime** is the thing that answers the question. What survives is its
+  design, and it is the part worth reading in any runtime's documentation.
+
+The two hyperscaler runtimes answer it differently, and both say so plainly.
+AWS's [AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-sessions.html)
+gives each session its own microVM, stops it after 15 minutes idle by default
+or 8 hours of compute, and tells you that session state is ephemeral: durable
+context belongs in AgentCore Memory, a separate service. Google's
+[Agent Runtime](https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/runtime)
+— the service formerly called Vertex AI Agent Engine — supports long-running
+operations of up to seven days, with sessions and a memory bank as companion
+services. Different answers, both coherent. Neither is wrong; what would be
+wrong is choosing one without reading the answer.
+
+## What a runtime actually does
+
+Seven jobs, each one something a sandbox does not do for you and a harness
+cannot do for itself. For each, how we built it, because a definition is only
+useful when you can see where the line falls.
+
+### 1. Keep the session, not just the machine
+
+The transcript and every event the agent produced are written to durable
+storage outside the sandbox. A client that drops its connection reconnects with
+the last event id it saw and receives everything after it, in order. The
+machine can be paused, woken or rebuilt; the session's history does not move.
+
+### 2. Put the machine to sleep, and wake it
+
+A sandbox that runs while nobody needs it is a bill. In Gobare a workspace
+pauses after five minutes with nothing happening and wakes on the next input;
+paused time is free. The runtime has to tell "idle" from "busy with a long
+command", which is the part that is easy to get wrong — a naive idle timer
+kills a build halfway through.
+
+### 3. Wait for a person, or for your code
+
+Real work stops to ask. The agent wants a function only your backend can run, an
+approval before it deploys, or an answer to a question. A runtime turns that into
+a durable pause: the session reports what it is waiting for, and resumes when
+an answer arrives, whether that takes seconds or a weekend. By default nothing
+times the wait out. In a harness alone this is a callback in a process; if the process
+dies, so does the question.
+
+### 4. Hold the secrets the agent must not see
+
+The agent needs a model key to think and it should never be able to read it. In
+Gobare the key is decrypted only in the control plane and the model call is
+made from there; it never enters the sandbox, so nothing the agent runs can print
+it, log it or send it anywhere. This boundary only exists if something other
+than the sandbox makes the call — which is to say, a runtime.
+
+### 5. Tell your systems what happened
+
+Your backend should not hold a connection open for an hour to learn that a task
+finished. A runtime delivers events: signed webhooks, retried until they land,
+delivered at least once so your receiver deduplicates. The agent's work becomes something your product is notified about
+rather than something it watches. The whole round trip — one request in, one
+signed webhook out — is written up in
+[Run a coding agent from your backend API](https://gobare.dev/blog/run-coding-agent-from-backend-api).
+
+### 6. Enforce limits
+
+Concurrency ceilings, rate limits, a maximum lifetime per workspace. Gobare
+reclaims a workspace two hours of active time after it starts; a turn still
+running then ends as failed, and work that needs longer is split across
+sessions. Limits are a runtime's job because the sandbox does not know about
+your other sessions and the harness does not know about your bill.
+
+### 7. Let results outlive the machine
+
+Files the agent writes to a known place are published as artifacts when a turn
+completes and stay downloadable after the sandbox is gone. OpenAI's hosted
+sandboxes use the same convention, `/workspace/outputs`, which is a sign this
+is converging into a shared idea of what a runtime owes you.
+
+## Do you need an agent runtime?
+
+Not always. A chatbot that answers in one request needs a model and a harness,
+and a runtime would be weight. Count how many of these are true of your agent:
+
+- A task takes longer than one HTTP request is willing to wait.
+- It has to stop and wait for a person or for your system.
+- Many sessions run at once, for many users — or many agents on one
+  codebase, [one per ticket](https://gobare.dev/blog/parallel-agents-one-per-ticket).
+- A crash or a deploy must not lose the work.
+- It holds credentials the agent itself must not be able to read.
+- Someone other than the person who started it reads the result later.
+
+One of these, you can handle by hand. Two or more, and you are building a
+runtime whether you call it one or not — a queue, a state table, a reaper for
+idle machines, a webhook sender, a secret boundary. The choice is whether to
+build it or to use one.
+
+## Build it, or use one
+
+**Build it** on a durable execution engine such as Temporal or Inngest, a
+sandbox provider for the machine, and a harness or framework for the loop. You
+get every choice and you own every failure mode. It is the right answer when
+the runtime is your product.
+
+**Use one.** The hosted options differ mostly in what they bind you to:
+
+- **Bedrock AgentCore Runtime** and **Google Agent Runtime** — the runtime of
+  a cloud you already use, with that cloud's identity, network and memory
+  services around it.
+- **OpenAI Agents API** and **Claude Managed Agents** — harness, runtime and
+  sandbox from a model provider, built around that provider's models.
+- **Gobare** — a hosted runtime that runs the open-source pi harness, on any
+  model you connect with your own key. It runs on a single sandbox provider
+  and you cannot bring your own compute, which is a real limit to weigh.
+
+We compared the model-provider options in detail in
+[OpenAI Agents API alternative](https://gobare.dev/blog/openai-agents-api-alternative)
+and [when you need something other than Claude Managed Agents](https://gobare.dev/blog/claude-managed-agents-alternative),
+and what three runtimes do with an idle machine in
+[I read the sandbox docs of three agent runtime APIs](https://gobare.dev/blog/agent-runtimes-disagree-on-what-a-session-is).
+
+## The three layers in one system
+
+This is what the boundaries look like when they are separate processes, which
+is how Gobare is built:
+
+```text
+your product ──HTTP──▶ runtime (control plane)
+                        │  session state, event log, webhooks
+                        │  lifecycle: pause, wake, reclaim
+                        │  waits: functions, approvals, questions
+                        │  model key  ──▶ model provider
+                        ▼
+                      harness (pi, unmodified)
+                        │  the agent loop: prompt, tool calls, context
+                        ▼
+                      sandbox (one per session)
+                           shell, files, git, browser
+```
+
+The runtime is the only layer that talks to your product and the only one that
+holds the key. The harness never learns what a webhook is; the sandbox never
+learns what a session is. That is the whole definition, drawn once.
+
+## Frequently asked questions
+
+### What is the difference between an agent runtime and an agent harness?
+
+A harness is the agent loop itself: how a model is prompted, which tools it
+calls and how its context is managed within a turn. A runtime runs that loop
+over time and owns everything that must outlive a single turn — session state,
+the event history, sleep and wake, pauses for approval, and credentials.
+
+### Is a sandbox an agent runtime?
+
+A sandbox is where an agent's commands and code execute: an isolated machine
+with a shell, files and often a browser. Some writers call it a runtime. In the
+layered sense, it sits below one: the runtime decides when the sandbox runs,
+what happens when it stops, and what survives it.
+
+### Is LangGraph an agent runtime?
+
+LangChain describes LangGraph as a runtime and LangChain as a framework built on
+it. LangGraph provides durable execution, persistence and human-in-the-loop
+inside your own deployment. It does not provide the sandbox or host the agent
+for you unless you use LangChain's hosted platform.
+
+### What is Bedrock AgentCore Runtime?
+
+It is AWS's managed runtime for agents. Each session gets its own microVM, which
+stops after 15 minutes idle by default or 8 hours of compute. AWS documents
+session state as ephemeral and points to AgentCore Memory for anything that
+must last.
+
+### What is Google Agent Runtime?
+
+It is Google Cloud's managed agent runtime, part of Gemini Enterprise Agent
+Platform and formerly called Vertex AI Agent Engine. It deploys and scales
+agents built with frameworks such as ADK, LangGraph and LlamaIndex, and supports
+long-running operations of up to seven days.
+
+### Do I need an agent runtime for a chatbot?
+
+Usually not. If each answer completes within one request and nothing has to
+wait, survive a crash or hold a secret the agent must not read, a model and a
+harness are enough. A runtime starts paying for itself when work is long,
+interrupted, parallel or read by someone later.
+
+*Sources, checked 28 September 2026:* LangChain,
+[Agent frameworks, runtimes, and harnesses](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my);
+AWS, [AgentCore Runtime isolated sessions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-sessions.html);
+Google Cloud, [Agent Runtime](https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/runtime) and
+[name changes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/vertex-ai-name-changes);
+Orca Security, [Best AI agent runtime tools](https://orca.security/resources/blog/best-ai-agent-runtime-tools-platforms/);
+OpenAI, [hosted sandboxes](https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted);
+Gobare, [limits](https://docs.gobare.dev/limits), [events](https://docs.gobare.dev/events),
+[required actions](https://docs.gobare.dev/required-actions) and
+[design decisions](https://docs.gobare.dev/design-decisions).

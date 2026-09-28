@@ -1,27 +1,42 @@
 ---
-title: "OpenAI Agents API alternative: the same request, on any model"
-description: "OpenAI's hosted Agents API runs OpenAI models on OpenAI's terms. If you need Claude, Kimi or your own key behind the same kind of session, here is what to use, and when to stay put."
+title: "OpenAI Agents API alternatives in 2026: hosted, compatible, and self-hosted"
+description: "Every real alternative to OpenAI's hosted Agents API, grouped by what you want to keep: the OpenAI SDK, a hosted runtime on any model, or your own infrastructure. With request shapes side by side and where each one loses."
 date: "2026-09-27"
+updated: "2026-09-28"
 category: "Guides"
 tags: "OpenAI, API"
 cover: "images/openai-agents-api-alternative-cover.png"
-coverText: "OpenAI Agents API|alternative"
+coverText: "OpenAI Agents API|alternatives"
 author: "Gobare team"
 featured: "true"
 ---
 
 OpenAI's [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview)
-went into public beta on 10 September. It is a good product: a hosted Codex
-harness, a sandbox per session, artifacts that outlive the machine. If you are
-building on OpenAI models and nothing below bothers you, use it.
+went into public beta on 10 September 2026: a hosted Codex harness, a sandbox
+per session, artifacts that outlive the machine. If you build on OpenAI models
+and nothing below bothers you, use it.
 
-This page is for the other case. You want that shape — send a task over HTTP, an
-agent works on a real machine until it's done, you read the results — but you
-need a different model, your own key, or different terms than the beta offers.
+This page is for the other case. You want that shape — send a task over HTTP,
+an agent works on a real machine until it's done, you read the results — but
+you need a different model, your own key, your own infrastructure, or terms the
+beta doesn't offer.
 
-Disclosure: we build [Gobare](https://gobare.dev), one of the alternatives
-below. Every claim about OpenAI is quoted from its public documentation, checked
-on 27 September 2026, and there is a section on where we lose.
+**The short answer:**
+
+| If you want to… | Look at |
+|---|---|
+| Keep the official `openai` package and change only the endpoint | Rebyte, Open Managed Agents |
+| A hosted runtime that runs any model on your own key | Gobare |
+| Bring your own harness (Codex CLI, OpenCode) to managed microVMs | DigitalOcean Managed Agents |
+| A hosted runtime and you're committed to one lab's models | Claude Managed Agents, Mistral Agents API |
+| Run it all on your own infrastructure | Open Managed Agents, AstraBox |
+| Deploy your own agent code, any framework, on managed infra | Amazon Bedrock AgentCore |
+| Own the loop entirely | OpenAI Agents SDK plus a sandbox provider |
+
+Disclosure: we build [Gobare](https://gobare.dev), one of the options below.
+Every claim about another product is quoted or paraphrased from its own public
+documentation, checked on 28 September 2026, and there is a section on where we
+lose.
 
 ## First: the Agents API is not the Agents SDK
 
@@ -38,8 +53,9 @@ With the hosted API, OpenAI's documentation shows OpenAI models only — every
 example uses `gpt-6-astra`, and we could not find a documented way to run a
 non-OpenAI model on the hosted path.
 
-Everything below is about hosted runtimes: the ones that give your agent a
-machine.
+Most "Agents SDK alternatives" lists compare frameworks: LangGraph, CrewAI,
+LlamaIndex. Those replace the SDK. This page is about replacing the hosted API,
+which means something has to run the loop and the machine for you.
 
 ## Why teams look for an alternative
 
@@ -62,25 +78,86 @@ Five reasons come up, and each one is on OpenAI's own pages:
 
 None of these make the Agents API wrong. They make it a specific choice.
 
-## The alternatives, briefly
+## The alternatives, by what you want to keep
 
-| | Who runs the loop | Models | Sandbox |
-|---|---|---|---|
-| OpenAI Agents API | OpenAI | OpenAI | OpenAI-hosted, self-hosted, or a partner |
-| OpenAI Agents SDK + a sandbox provider | You | Any, via adapters | Whichever provider you wire up |
-| Claude Managed Agents | Anthropic | Claude | Anthropic-hosted, or self-hosted |
-| Gobare | Gobare | Any connected key | Gobare-hosted |
+### Keep the OpenAI SDK, change the endpoint
 
-**Agents SDK plus your own sandbox** is the most flexible and the most work. You
-get every model and every sandbox, and you also own the queue, the retries, the
-lifecycle, the event stream and the webhook delivery. Pick it if orchestration
-is something you want to own.
+**Rebyte** describes itself as a managed agent runtime with durable sessions
+and tools, and its docs say to "call the Agents API with the official openai
+package, your Rebyte API key and the Rebyte endpoint." If your code already
+targets the Agents API and you want the smallest possible diff, this is the
+shortest path. Its docs don't cover bring-your-own-key or pricing.
 
-**Claude Managed Agents** is the same idea as OpenAI's with Anthropic on the
-other side. Pick it if you are committed to Claude.
+**Open Managed Agents** is an "open-source, self-hosted alternative to Claude
+Managed Agents and OpenAI Agents API" under Apache 2.0. It serves both APIs —
+Anthropic's `/v1/agents` and `/v1/sessions`, and OpenAI's under `/openai/v1` —
+with your own model keys, on Node.js, Docker or Cloudflare Workers, or hosted at
+openma.dev. Sandboxes include E2B, Daytona and Cloudflare Containers.
 
-**Gobare** is the hosted shape without the model coupling: we run the agent and
-the machine, you bring the key.
+### A hosted runtime on any model, with your own key
+
+**Gobare** runs the agent and its machine; you connect a key from Anthropic,
+OpenAI, xAI, OpenRouter, MiniMax, DeepSeek, Qwen, Kimi, GLM or any compatible
+endpoint, and every session uses it. The key is verified on save and never
+enters a sandbox. Each session is its own sandboxed computer with a shell,
+files and a browser, running the open-source [pi](https://github.com/earendil-works/pi)
+harness unmodified. It is conceptually aligned with the Agents API and
+deliberately not wire-compatible — the request shape is close, the SDK is not
+the same.
+
+**DigitalOcean Managed Agents**, in public preview since 22 September 2026, lets
+teams "deploy their preferred agent harness (like OpenCode, Codex CLI) or bring
+their own." Each session runs in a dedicated Firecracker microVM, billed per
+second of active CPU. The model is whatever your harness is configured to call.
+
+### A hosted runtime from one model lab
+
+**Claude Managed Agents** is the same idea as OpenAI's, with Anthropic on the
+other side: Anthropic runs the loop, tools execute in Anthropic-managed
+sandboxes, and a self-hosted sandbox option moves tool execution onto your
+infrastructure. Pick it if you're committed to Claude.
+
+**Mistral Agents API** gives agents built-in tools including a code interpreter
+that runs code "in an isolated container", plus web search, image generation
+and a document library, and MCP servers as connectors. It runs Mistral models,
+and the Agents and Conversations endpoints are marked beta.
+
+### Everything on your own infrastructure
+
+**Open Managed Agents**, above, is the most complete self-hosted option if you
+want an API shape your code already knows.
+
+**AstraBox** is an Apache 2.0 project that runs Claude Code, Codex, Hermes,
+DeepSeek Harness and pi "as managed Agents on your own infrastructure", on one
+Docker host or a Kubernetes cluster, with a bundled LiteLLM gateway for any
+Anthropic- or OpenAI-compatible model. It is young.
+
+### Your own agent code, managed infrastructure
+
+**Amazon Bedrock AgentCore** is for teams that already have an agent: "Start
+with LangChain, OpenAI Agents SDK, Claude Agent SDK, Strands SDK, or your own
+framework, and deploy with any model." You bring the loop; AWS runs it.
+
+**The OpenAI Agents SDK plus a sandbox provider** — E2B, Modal, Daytona and
+others — is the most flexible and the most work. You get every model and every
+sandbox, and you also own the queue, the retries, the lifecycle, the event
+stream and the webhook delivery. The sandbox is the layer underneath; the loop
+and everything around it is yours.
+
+### All of them in one table
+
+| | Who runs the loop | Models | OpenAI SDK works unchanged | Open source |
+|---|---|---|---|---|
+| OpenAI Agents API | OpenAI | OpenAI | Yes | No |
+| Rebyte | Rebyte | Not documented | Yes | No |
+| Open Managed Agents | You, or openma.dev | Any, your keys | Yes | Yes |
+| Gobare | Gobare | Any, your key | No | Harness only (pi) |
+| DigitalOcean Managed Agents | Your harness, on DigitalOcean | Your harness's | No | No |
+| Claude Managed Agents | Anthropic | Claude | No | No |
+| Mistral Agents API | Mistral | Mistral | No | No |
+| AstraBox | You | Any, via LiteLLM | No | Yes |
+| Bedrock AgentCore | Your code, on AWS | Any | Your code | No |
+| Agents SDK + sandbox | You | Any, via adapters | It is the SDK | Yes |
 
 ## The same request, side by side
 
@@ -149,6 +226,8 @@ The full list of intentional differences is in
 
 The part worth reading before you switch.
 
+- **Not wire-compatible.** If you want to keep the `openai` package and change
+  only a URL, Rebyte or Open Managed Agents is a smaller move.
 - **A workspace has a two-hour ceiling.** It is reclaimed two hours of active
   time after it starts; paused time does not count. A turn still running then
   ends as failed. Longer work has to be split across sessions.
@@ -168,27 +247,68 @@ The part worth reading before you switch.
 
 ## How to decide
 
-Ask three questions:
+1. **Does it have to be an OpenAI model?** Use OpenAI's Agents API.
+2. **Is your code already written against the Agents API?** Rebyte or Open
+   Managed Agents keeps the diff to a URL.
+3. **Must it run on your own infrastructure?** Open Managed Agents or AstraBox.
+4. **Do you already have an agent and just need somewhere to run it?** Bedrock
+   AgentCore, or DigitalOcean Managed Agents if it's a CLI harness.
+5. **Do you want to own the loop?** The Agents SDK with a sandbox provider.
+6. **None of the above — you want a hosted session on your own key, any
+   model?** That is what Gobare is for.
 
-1. **Does it have to be an OpenAI model?** If yes, use OpenAI's Agents API.
-2. **Do you want to own the loop and the lifecycle?** If yes, use the Agents SDK
-   with a sandbox provider you choose.
-3. **Neither?** You want a hosted session on your own key. That is what Gobare
-   is for.
+## Frequently asked questions
 
-## Try it
+### Can I use Claude with the OpenAI Agents API?
+
+Not on the hosted path, as far as OpenAI's documentation shows: every example
+uses an OpenAI model, and there is no documented way to select another
+provider. The open-source Agents SDK can use Claude through its LiteLLM or
+Any-LLM adapters, but then you run the loop yourself.
+
+### Is there an open-source alternative to the OpenAI Agents API?
+
+Yes. Open Managed Agents implements the Agents API surface under `/openai/v1`
+and is Apache 2.0. AstraBox is Apache 2.0 too but exposes its own API.
+
+### Is there a drop-in, OpenAI-compatible endpoint?
+
+Rebyte documents using the official `openai` package against its own endpoint,
+and Open Managed Agents serves the same surface. Gobare is deliberately not
+wire-compatible.
+
+### Does the OpenAI Agents API support EU data residency or ZDR?
+
+Not during the beta: OpenAI states it supports data residency only in the
+United States and does not support Zero Data Retention, including with a
+self-hosted sandbox.
+
+### What is the difference between the Agents API and the Agents SDK?
+
+The SDK is a library that runs the agent loop in your process. The API is a
+hosted service where OpenAI runs the loop and, optionally, the sandbox. See the
+first section above.
+
+## Try Gobare
 
 The [quickstart](https://docs.gobare.dev/quickstart) goes from a token to a
 finished turn in three calls. The API is described in full at
 [api.gobare.dev/v1/openapi.json](https://api.gobare.dev/v1/openapi.json), no
 token needed.
 
-*Sources, checked 27 September 2026:* OpenAI
+*Sources, checked 28 September 2026:* OpenAI
 [Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview),
 [quickstart](https://developers.openai.com/api/docs/guides/agents-api/quickstart),
 [architecture](https://developers.openai.com/api/docs/guides/agents-api/architecture),
 [OpenAI-hosted sandboxes](https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted),
 [Agents SDK models](https://openai.github.io/openai-agents-python/models/);
+[Rebyte Agents API](https://rebyte.ai/docs/agents-api/overview);
+[Open Managed Agents](https://github.com/openma-ai/open-managed-agents);
+[AstraBox](https://github.com/Colton-z/AstraBox);
+[DigitalOcean Managed Agents](https://www.digitalocean.com/blog/managed-agents-public-preview);
 Anthropic [self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes);
+Mistral [Agents & Conversations](https://docs.mistral.ai/studio-api/agents/agents-api),
+[Code Interpreter](https://docs.mistral.ai/studio/agents/agent-tools/code_interpreter);
+[Amazon Bedrock AgentCore](https://aws.amazon.com/bedrock/agentcore/);
 Gobare [design decisions](https://docs.gobare.dev/design-decisions),
 [limits](https://docs.gobare.dev/limits).
