@@ -2,6 +2,7 @@
 title: "I read the sandbox docs of three agent runtime APIs. They don't agree on what a session is."
 description: "Perplexity, OpenAI and Gobare give three different answers to one question: when your agent stops typing, what happens to its machine? Quoted from each one's docs, including where each loses."
 date: "2026-09-27"
+updated: "2026-09-28"
 category: "Insights"
 tags: "Sandboxes, OpenAI"
 cover: "images/agent-runtimes-session-cover-v2.jpg"
@@ -59,6 +60,8 @@ So "can I use Claude with OpenAI's agent stuff?" has two answers depending on
 which product you meant. In the SDK, yes, on a well-trodden path. In the hosted
 Agents API — the one with the sandbox — you're on a second-class path, and
 features that depend on the Responses path may not carry over.
+If that rules the hosted API out for you, the options are laid out in
+[OpenAI Agents API alternatives](https://gobare.dev/blog/openai-agents-api-alternative).
 
 Everything below is strictly about hosted runtimes: the ones that give you a
 machine.
