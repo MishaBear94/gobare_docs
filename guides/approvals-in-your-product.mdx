@@ -1,7 +1,12 @@
 ---
-title: "Require human approval before the agent acts"
-description: "Make a person approve something before the agent does it"
+title: "Human-in-the-loop for agents: require approval over an API"
+description: "Pause an agent before a risky action, let a person approve or refuse it from your own product, and resume the same turn — over HTTP, with no agent state to save yourself."
 ---
+Human-in-the-loop, as an API: the agent stops before a risky action, the
+session reports what it wants to do, a person decides in your product, and one
+POST resumes the same turn. There is no run state for you to serialise and no
+process that has to stay alive while you wait.
+
 An agent that can restart a service or roll back a deployment should ask first,
 and the asking should happen where your team already is — your dashboard, your
 incident channel, your ticket queue.
@@ -18,6 +23,31 @@ flowchart TD
   decide --> answer["you send the answer"]
   answer --> cont["the agent continues"]
 ```
+
+## An API, not a callback
+
+In an agent SDK, human-in-the-loop is something your process does. The OpenAI
+Agents SDK, for example, pauses the run with an interruption and leaves the
+waiting to you: "Use `state.to_json()` or `state.to_string()` to store pending
+work in a database or queue and recreate it later." The pause is real, but
+keeping it — storage, a queue, a worker that picks the run back up — is yours.
+
+Here the pause is the session's. It sits in `requires_action` in the control
+plane, a webhook says so, and any process holding the right token can answer it
+later.
+
+| | Where the paused run lives | What you build |
+| --- | --- | --- |
+| Callback in your process | Your process's memory | Nothing — until the process restarts |
+| Serialised run state (SDK) | Wherever you stored it | Storage, a queue, and resume logic |
+| Session in `requires_action` (this API) | The control plane | An answer: `input.approval` or `input.question_answer` |
+
+Two limits worth knowing before you design around it. While a turn is parked
+the workspace stays up — it is not paused underneath — so the wait counts
+toward the workspace's two-hour ceiling in [limits](/limits). And approvals and
+questions never time out on their own. For a decision that may take until
+morning, answer with "queued for review" and start a fresh turn when the person
+decides; [Deadlines](/required-actions#deadlines) covers why.
 
 ## Before you start
 
