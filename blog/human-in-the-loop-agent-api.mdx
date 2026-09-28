@@ -1,0 +1,188 @@
+---
+title: "Human-in-the-loop agent API: pause for a person without saving state yourself"
+description: "Three ways to make an AI agent stop and wait for a human approval — an in-process callback, serialised SDK state, or a session that parks in the API — and how the third works over HTTP, with its limits."
+date: "2026-09-28"
+category: "Guides"
+tags: "Human-in-the-loop, API"
+cover: "images/human-in-the-loop-agent-api-cover.png"
+coverText: "Human-in-the-loop,|over an API"
+author: "Gobare team"
+---
+
+A human-in-the-loop agent API lets an agent stop mid-task, tell you what it
+wants to do, and wait until a person approves, refuses or answers — then carry
+on from exactly where it stopped. The hard part is not the pause. It is where
+the paused run lives while nobody is looking at it.
+
+This post compares the three places it can live, then walks through the one
+where it lives in the API. Disclosure: we build [Gobare](https://gobare.dev),
+which is that third kind. The limits are at the end, and they are real.
+
+## Three places a paused agent can live
+
+**In your process.** Most frameworks start here: a tool is marked as needing
+approval, the loop stops, and a callback waits for a decision. It is simple
+until the process restarts, a deploy rolls, or the person answers tomorrow.
+Then the run is gone.
+
+**In state you serialise.** SDKs that take this seriously let you save the
+paused run and resume it later. The OpenAI Agents SDK is a good example: the run
+stops with an interruption, and its documentation tells you to "use
+`state.to_json()` or `state.to_string()` to store pending work in a database or
+queue and recreate it later." That works across restarts. It also means the
+storage, the queue, and the worker that picks the run back up are yours to
+build and operate.
+
+**In the session.** A hosted agent runtime can hold the pause itself. The
+session reports that it needs something, a webhook tells you, and any process
+with the right token answers it whenever it is ready. Nothing to serialise,
+nothing that has to stay alive in your infrastructure while you wait.
+
+| | Where the paused run lives | What you build |
+| --- | --- | --- |
+| Callback in your process | Your process's memory | Nothing, until the process restarts |
+| Serialised SDK state | Wherever you stored it | Storage, a queue, and resume logic |
+| Session parked in the API | The runtime's control plane | One HTTP call with the answer |
+
+## How the third one works over HTTP
+
+Everything below is Gobare's API; the field names are from its
+[required actions](https://docs.gobare.dev/required-actions) reference.
+
+### 1. The agent stops and the session says why
+
+When the agent needs a decision, the turn parks and the session goes to
+`requires_action`. Its `required_actions` list says what is being asked. There
+are three types, and each has its own answer:
+
+| `type` | Who answers | How |
+| --- | --- | --- |
+| `function_call` | Your code — a tool you declared, such as `request_approval` | `input.tool_result` |
+| `approval` | Your code, or a person in the Console | `input.approval` |
+| `question` | Your code, or a person in the Console | `input.question_answer` |
+
+The first type is the one to design with. Declare a tool that *records a
+decision and does nothing else*, make its arguments say what is at stake, and
+tell the agent in its instructions to call it before anything destructive. The
+[approval guide](https://docs.gobare.dev/guides/approvals-in-your-product) builds
+exactly that, end to end, with a runnable script.
+
+### 2. You are told, instead of watching
+
+Subscribe a webhook to `session.action_required`. The delivery names the session
+and the kind of action; it never embeds the object, so you read current state
+rather than a stale copy:
+
+```json
+{
+  "object": "event",
+  "type": "session.action_required",
+  "created_at": 1789172121302,
+  "data": { "session_id": "3f9c1b60-4e2a-4d18-9a77-6c0b2e5d81af", "required_action": { "type": "function_call" } }
+}
+```
+
+If you cannot expose an HTTPS endpoint, poll the session instead; the guide does
+exactly that from a laptop.
+
+### 3. A person decides, wherever your team already is
+
+Your handler reads the session, turns the pending action into something a
+person can judge — a Slack message, a Linear comment, a row in your admin
+dashboard — and waits. There is no agent process of yours to keep alive during
+that wait.
+
+### 4. One POST resumes the same turn
+
+```bash
+# approve
+curl -s -X POST https://api.gobare.dev/v1/sessions/$SESSION/events \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"events":[{"type":"input.approval","call_id":"call_9a1f…","approved":true}]}'
+
+# answer a question
+curl -s -X POST https://api.gobare.dev/v1/sessions/$SESSION/events \
+  -H "Authorization: Bearer $GOBARE_TOKEN" -H 'content-type: application/json' \
+  -d '{"events":[{"type":"input.question_answer","call_id":"call_9a1f…","answer":"Use the staging bucket."}]}'
+```
+
+`approved` must be `true` or `false`; it is never defaulted either way. The
+agent picks up from the point it parked, with the decision in hand. A refusal is
+not a failure: tell the agent in its instructions what to do when it is refused,
+and it will propose something else.
+
+## Answering twice is fine
+
+Webhooks are delivered at least once, so sooner or later you will answer the
+same action twice. That is designed for, not guarded against: a repeated answer
+comes back as `already_resolved` or `no_longer_pending` instead of an error.
+Keep the approval tool free of side effects and a duplicate costs nothing.
+
+## Which token answers what
+
+Answering a function call needs the `tools:respond` scope and nothing else — a
+token that can watch a session and return tool results, but cannot message,
+cancel or delete it. Answering an `approval` or a `question` is sending input to
+the session, so it needs `sessions:write`. Give the process that relays human
+decisions the second; give a fleet of tool handlers only the first.
+
+## The limits
+
+- **The workspace stays up while a turn waits.** It is not paused underneath a
+  parked turn, so the wait counts toward the workspace's two-hour ceiling. A turn
+  still parked when that arrives ends as failed.
+- **Approvals and questions never time out on their own.** A function tool can
+  declare `timeout_seconds` (1 to 7200); past it, that call fails and the turn
+  carries on. Approvals wait for a person indefinitely.
+- **Overnight decisions need a different shape.** For a decision that may take
+  until morning, do not hold the turn: have the approval tool answer "queued
+  for review", end the turn, and start a fresh one when the person decides. The
+  [deadlines section](https://docs.gobare.dev/required-actions#deadlines)
+  explains why.
+
+## Frequently asked questions
+
+### What is a human-in-the-loop agent API?
+
+An API where an AI agent can pause mid-task for a person's approval or answer,
+and resume the same task afterwards. The difference from a framework feature is
+where the paused run is kept: in the API's own session rather than in your
+process or your database.
+
+### Do I have to store the agent's state while it waits for approval?
+
+With an in-process SDK, yes — you serialise the run and resume it yourself.
+With a session-based agent API, no: the session holds the pause, and your answer
+is a single HTTP call.
+
+### What happens if nobody approves?
+
+The approval waits; it does not expire by itself. The workspace underneath does
+have a two-hour ceiling, so for decisions that may take longer, end the turn
+with "queued for review" and start a new one when the decision arrives.
+
+### Can a person approve from Slack or a dashboard instead of code?
+
+Yes. Your handler posts the pending action wherever your team works and sends
+the answer back when someone decides. Approvals and questions can also be
+answered by a person directly in Gobare's Console.
+
+### How is this different from the OpenAI Agents SDK's human-in-the-loop?
+
+The SDK pauses a run inside your process and gives you `RunState` to save and
+restore. A session-based API keeps the paused run for you. If you are weighing
+hosted options more broadly, see
+[OpenAI Agents API alternatives](https://gobare.dev/blog/openai-agents-api-alternative).
+
+## Next
+
+- [Human-in-the-loop for agents: require approval over an API](https://docs.gobare.dev/guides/approvals-in-your-product) — the full runnable walkthrough
+- [Required actions](https://docs.gobare.dev/required-actions) — every type, outcome and deadline
+- [What is an agent runtime?](https://gobare.dev/blog/what-is-an-agent-runtime) — the layer that makes a durable pause possible
+
+*Sources, checked 28 September 2026:* OpenAI Agents SDK,
+[Human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/);
+Gobare [required actions](https://docs.gobare.dev/required-actions),
+[approval guide](https://docs.gobare.dev/guides/approvals-in-your-product),
+[webhooks](https://docs.gobare.dev/webhooks),
+[limits](https://docs.gobare.dev/limits).
