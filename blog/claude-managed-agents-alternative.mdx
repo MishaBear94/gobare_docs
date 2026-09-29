@@ -2,7 +2,7 @@
 title: "Claude Managed Agents alternative: when you need something else"
 description: "Looking for a Claude Managed Agents alternative? When to stay, the open-source options, and a hosted runtime for any model, quoted from Anthropic's docs."
 date: "2026-09-27"
-updated: "2026-09-28"
+updated: "2026-09-29"
 category: "Guides"
 tags: "Claude, Managed Agents"
 cover: "images/claude-managed-agents-alternative-cover.jpg"
@@ -90,6 +90,8 @@ The top of most searches for an alternative is open source, and for good reason:
 * **[OpenMA](https://github.com/openma-ai/open-managed-agents)** (Apache-2.0) describes itself as *"an open-source alternative to Claude Managed Agents and OpenAI Agents API."* Node.js, Docker or Cloudflare, or their hosted version; you choose the models, harnesses and sandboxes.
 * **[open-managed-agents](https://github.com/rogeriochaves/open-managed-agents)** (AGPL-3.0): self-hostable, multi-LLM, with org, team and RBAC governance.
 * **[AstraBox](https://github.com/Colton-z/AstraBox)**: a newer project, posted as a Show HN in September 2026.
+* **[Deep Agents Deploy](https://www.langchain.com/blog/deep-agents-deploy-an-open-alternative-to-claude-managed-agents)** from LangChain, which it calls *"an open alternative to Claude Managed Agents"*. The harness, Deep Agents, is open source and model-agnostic; `deepagents deploy` runs it on a LangSmith Deployment server, and LangSmith Deployments can be self-hosted.
+* **[TrueForge](https://www.truefoundry.com/blog/engineering/trueforge-open-source-agent-harness)** from TrueFoundry (MIT): an agent harness with an HTTP API and chat UI that runs locally with one `npx` command or on your cluster with Docker Compose or Helm, on any OpenAI-compatible model.
 
 The trade is the usual one: full control and any model, in exchange for running a control plane, a database and sandboxes yourself.
 
@@ -219,7 +221,7 @@ When selecting a managed agent runtime, apply this decision matrix:
 No. Anthropic documents it as the harness for running Claude, and *"Claude 4.5 and later models are supported."* For another provider's model you need a different runtime.
 
 ### Is there an open-source alternative to Claude Managed Agents?
-Yes: OpenMA (Apache-2.0), open-managed-agents (AGPL-3.0) and AstraBox, all self-hosted. OpenMA also offers a hosted version.
+Yes: OpenMA (Apache-2.0), open-managed-agents (AGPL-3.0), LangChain's Deep Agents Deploy, TrueForge (MIT) and AstraBox. All can run on your own infrastructure; OpenMA also offers a hosted version.
 
 ### Is there a hosted alternative that isn't tied to one model?
 Gobare is one: a managed runtime API where you connect your own key from any of nine providers or a compatible endpoint. OpenAI's Agents API is hosted too, but built around OpenAI models.
@@ -232,10 +234,10 @@ Not currently, and not for HIPAA BAA coverage either.
 
 ## Sources
 
-All checked 28 September 2026.
+All checked 28 September 2026; Deep Agents Deploy and TrueForge on 29 September 2026.
 
 * **Claude Managed Agents**: [Pricing](https://platform.claude.com/docs/en/about-claude/pricing) · [Overview](https://platform.claude.com/docs/en/managed-agents/overview) · [Agent setup](https://platform.claude.com/docs/en/managed-agents/agent-setup) · [Sessions](https://platform.claude.com/docs/en/managed-agents/sessions) · [Session event stream](https://platform.claude.com/docs/en/managed-agents/events-and-streaming) · [Webhooks](https://platform.claude.com/docs/en/managed-agents/webhooks) · [Reference](https://platform.claude.com/docs/en/managed-agents/reference)
-* **Open source**: [OpenMA](https://github.com/openma-ai/open-managed-agents) · [open-managed-agents](https://github.com/rogeriochaves/open-managed-agents) · [AstraBox](https://github.com/Colton-z/AstraBox)
+* **Open source**: [OpenMA](https://github.com/openma-ai/open-managed-agents) · [open-managed-agents](https://github.com/rogeriochaves/open-managed-agents) · [AstraBox](https://github.com/Colton-z/AstraBox) · [Deep Agents Deploy](https://www.langchain.com/blog/deep-agents-deploy-an-open-alternative-to-claude-managed-agents) · [TrueForge](https://www.truefoundry.com/blog/engineering/trueforge-open-source-agent-harness)
 * **Gobare**: [Why Gobare](https://docs.gobare.dev/why-gobare) · [Design decisions](https://docs.gobare.dev/design-decisions) · [Limits](https://docs.gobare.dev/limits) · [Webhooks](https://docs.gobare.dev/webhooks) · [Model credentials](https://docs.gobare.dev/model-credentials)
 
 *New to the term? [What is an agent runtime?](https://gobare.dev/blog/what-is-an-agent-runtime) explains the layer this post is about — between the harness and the sandbox.*
