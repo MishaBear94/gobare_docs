@@ -100,9 +100,11 @@ kills a build halfway through.
 Real work stops to ask. The agent wants a function only your backend can run, an
 approval before it deploys, or an answer to a question. A runtime turns that into
 a durable pause: the session reports what it is waiting for, and resumes when
-an answer arrives, whether that takes seconds or a weekend. By default nothing
-times the wait out. In a harness alone this is a callback in a process; if the process
-dies, so does the question.
+an answer arrives. The question itself does not expire. The machine under it is
+a separate matter — in Gobare the workspace stays up while a turn waits, and it
+has a two-hour ceiling, so a decision that may take a weekend should end the
+turn and start a new one when the answer comes. In a harness alone this is a
+callback in a process; if the process dies, so does the question.
 
 ### 4. Hold the secrets the agent must not see
 
@@ -124,9 +126,10 @@ signed webhook out — is written up in
 ### 6. Enforce limits
 
 Concurrency ceilings, rate limits, a maximum lifetime per workspace. Gobare
-reclaims a workspace two hours of active time after it starts; a turn still
-running then ends as failed, and work that needs longer is split across
-sessions. Limits are a runtime's job because the sandbox does not know about
+reclaims a sandbox two hours after it was created, paused time included;
+sessions with a published address or an open SSH connection are exempt. The
+workspace files are snapshotted first and the next input starts a fresh
+sandbox from them, so work that needs longer is split across turns. Limits are a runtime's job because the sandbox does not know about
 your other sessions and the harness does not know about your bill.
 
 ### 7. Let results outlive the machine

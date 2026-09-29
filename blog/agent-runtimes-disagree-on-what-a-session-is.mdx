@@ -162,9 +162,8 @@ The part that makes the rest of this worth reading.
   honest read about how many ways idle-stop can go wrong.
 - **Gobare is single-provider:** strictly E2B, with no bring-your-own-compute.
   That's real lock-in and the most legitimate criticism of us on this page. A
-  workspace is also reclaimed two hours of active time after it starts; paused
-  time doesn't count, but a turn still running then ends as failed, so work that
-  genuinely needs longer has to be split across sessions. We have no model
+  sandbox is also reclaimed two hours after it was created, paused time
+  included, so work that genuinely needs longer has to be split across turns. We have no model
   fallback chain — Perplexity lets you pass up to five models and tries them in
   order, which is a straightforwardly better answer to provider outages than
   anything we have today. Their configuration profiles are versioned; our saved
